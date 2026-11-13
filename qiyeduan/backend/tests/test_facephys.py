@@ -315,5 +315,62 @@ class TestInterface(unittest.TestCase):
         self.assertEqual(t.calls, [], "空视频不该发起任何网络请求")
 
 
+class TestHrSeries(unittest.TestCase):
+    """逐点序列质检。实测素材里出现过 0.9 秒 85→117.5 的伪跳变。"""
+
+    def _p(self):
+        return make()
+
+    def test_unstable_jump_rejected(self):
+        p = self._p()
+        s = p.to_sample({
+            "cardiac": {
+                "hr": 117.9, "sqi": 0.4,
+                "hr_list": [{"ts": 15, "hr": 87.0}, {"ts": 16, "hr": 88.9},
+                            {"ts": 20, "hr": 85.1}, {"ts": 21.8, "hr": 117.5},
+                            {"ts": 22.7, "hr": 118.8}],
+            }
+        }, 30.0)
+        self.assertTrue(p.last_hr_unstable)
+        self.assertEqual(s.quality, 0.0, "伪跳变的数据必须判不可用")
+        self.assertFalse(s.usable)
+        self.assertGreaterEqual(p.last_hr_stats["max_jump"], 30)
+        self.assertTrue(p.last_hr_stats["unstable"])
+
+    def test_stable_series_kept(self):
+        p = self._p()
+        s = p.to_sample({
+            "cardiac": {
+                "hr": 78.0, "sqi": 0.4,
+                "hr_list": [{"ts": i, "hr": 77.0 + i * 0.5} for i in range(8)],
+            }
+        }, 30.0)
+        self.assertFalse(p.last_hr_unstable)
+        self.assertGreater(s.quality, 0)
+        self.assertTrue(s.usable)
+        self.assertLess(p.last_hr_stats["max_jump"], 2)
+
+    def test_plain_number_series(self):
+        p = self._p()
+        s = p.to_sample({"cardiac": {"hr": 70, "sqi": 0.4,
+                                     "hr_list": [70, 71, 70, 71, 70]}}, 1.0)
+        self.assertFalse(p.last_hr_unstable)
+        self.assertEqual(p.last_hr_stats["points"], 5)
+        self.assertGreater(s.quality, 0)
+
+    def test_short_series_ignored(self):
+        p = self._p()
+        p.to_sample({"cardiac": {"hr": 70, "sqi": 0.4,
+                                 "hr_list": [70, 71]}}, 1.0)
+        self.assertEqual(p.last_hr_stats, {}, "点太少不足以判断稳定性")
+        self.assertFalse(p.last_hr_unstable)
+
+    def test_empty_series_no_crash(self):
+        p = self._p()
+        s = p.to_sample({"cardiac": {"hr": 70, "sqi": 0.4, "hr_list": []}}, 1.0)
+        self.assertEqual(p.last_hr_stats, {})
+        self.assertTrue(s.usable)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -210,6 +210,12 @@ class RoomHub:
         rr_reason = getattr(PROVIDER, "last_rr_reason", "")
         if rr_reason:
             payload["rr_unavailable"] = rr_reason
+        # 逐点序列的稳定性：伪跳变的数据会被判不可用，界面要说清楚原因
+        hr_stats = getattr(PROVIDER, "last_hr_stats", None)
+        if hr_stats:
+            payload["hr_stats"] = hr_stats
+            if getattr(PROVIDER, "last_hr_unstable", False):
+                payload["hr_unstable"] = True
 
         await self.send("interviewer", payload)
 

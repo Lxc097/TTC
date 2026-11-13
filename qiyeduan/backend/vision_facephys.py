@@ -32,6 +32,8 @@ from typing import Optional
 
 from engine import PhysioSample
 
+import config
+
 DEFAULT_BASE = "https://www.facephys.com"
 # 官方文档：sqi >= 0.30 视为可用。我们的 MIN_QUALITY 默认 0.5 对 rPPG 太严。
 SQI_USABLE = 0.30
@@ -70,6 +72,8 @@ class FacePhysProvider:
         self.last_rr_reason = ""
         self.last_rr_detail = ""
         self.last_liveness: dict = {}
+        self.last_hr_stats: dict = {}
+        self.last_hr_unstable = False
         self.tokens_left: Optional[int] = None
 
     # ---------------------------------------------------------- 签名
@@ -134,6 +138,41 @@ class FacePhysProvider:
         self.last_raw = res
         return res.get("data", res)
 
+    # ---------------------------------------------------------- 逐点序列
+    @staticmethod
+    def _hr_series(cardiac: dict, data: dict) -> list[float]:
+        """取 cardiac.hr_list（可能是 [{hr, ts}] 或纯数字数组）。"""
+        raw = cardiac.get("hr_list") or data.get("hr_list") or []
+        out: list[float] = []
+        for item in raw:
+            v = item.get("hr") if isinstance(item, dict) else item
+            try:
+                out.append(float(v))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _analyse_series(self, series: list[float]) -> dict:
+        """分析逐点心率，判断这段数据是不是可信。
+
+        为什么要看这个：aggregate 的 hr 会被中途的伪跳变带偏。
+        实测一条素材里 0.9 秒内 hr 从 85 跳到 117.5，
+        聚合值最后给了 117.9，而前 7 个点都在 85~92。
+        生理上不可能 1 秒涨 32 bpm，那是算法换段产生的伪影。
+        """
+        if len(series) < 3:
+            return {}
+        jumps = [abs(b - a) for a, b in zip(series, series[1:])]
+        stats = {
+            "points": len(series),
+            "min": round(min(series), 1),
+            "max": round(max(series), 1),
+            "range": round(max(series) - min(series), 1),
+            "max_jump": round(max(jumps), 1) if jumps else 0.0,
+        }
+        stats["unstable"] = stats["max_jump"] > config.HR_MAX_JUMP
+        return stats
+
     # ---------------------------------------------------------- 映射
     def to_sample(self, data: dict, t: float) -> PhysioSample:
         """把 FacePhys 的返回映射成我们自己的采样结构。
@@ -148,6 +187,12 @@ class FacePhysProvider:
         """
         cardiac = data.get("cardiac") or data
         hrv = cardiac.get("hrv") or data.get("hrv") or {}
+
+        # 逐点序列分析：伪跳变的数据不能进基线，否则会污染后续所有判断
+        series = self._hr_series(cardiac, data)
+        stats = self._analyse_series(series)
+        self.last_hr_stats = stats
+        self.last_hr_unstable = bool(stats.get("unstable"))
 
         hr = cardiac.get("hr")
         if hr is None:
@@ -209,6 +254,11 @@ class FacePhysProvider:
             hr, quality = None, 0.0
         if rr is not None and not (4 <= rr <= 60):
             rr = None
+
+        # 伪跳变：逐点序列里出现生理上不可能的跳变，整段判不可用。
+        # 这条比阈值更硬：宁可这一段不出结果，也不能把伪影写进基线。
+        if self.last_hr_unstable:
+            quality = 0.0
 
         quality = max(0.0, min(1.0, quality or 0.0))
         faces = 1 if (hr is not None or quality > 0) else 0
