@@ -162,7 +162,60 @@ python tools/probe_vision_api.py --image samples/face.jpg --times 5
 它会一次告诉你四件事：**原始响应长什么样、被映射成了什么、延迟多少、延迟是否满足 <3s**。
 自检模式已经验证过：本地假服务 `78ms`，`hr=78.2 rr=16.1 quality=0.91 faces=1`，映射正确。
 
-### 第 2 步：字段名对不上就配环境变量
+### FacePhys 特别注意（这是视频形态，不是逐帧）
+
+判据：`VISION_PROVIDER=facephys`。代码在 `vision_facephys.py`，接口来自官方 v3 文档。
+
+**已实测通过**（用官网演示视频跑的真实全链路）：
+
+```
+lie2meInnocent.mp4   hr=102.06  sqi=0.384   12.2s
+lie2meCriminal.mp4   hr=66.42   sqi=0.310   17.0s
+```
+
+**实测出来的三条硬约束，会改变产品设计：**
+
+1. **单次 12–17 秒，不是 3 秒。** 一段 30 秒视频送上去，要等 12~17 秒才出结果。
+   「回答结束后 3 秒内给提示」在这个 API 上**不成立**。
+   可行的形态：改成「最近 1~2 分钟的整体负荷趋势」，每 30 秒出一个点，提示滞后约 20 秒。
+   这其实更符合生理学——心率响应本身就有 5~15 秒滞后，逐句话出信号反而是假精确。
+2. **返回值是单点采样，没有时间序列。** 一次调用 = 一个 hr + 一个 sqi，不是每秒一帧。
+   所以 `phys_peak`（一轮内的峰值）只有在同一轮里打过 2 个以上视频块时才有意义。
+3. **Token 消耗要算账。** 实测后余额 854,000。如果起始是 100 万，那 2~3 次调用
+   就用掉了约 15 万，**单次约 5 万 token**，只够再跑十几次。
+   现场 demo 千万别拿它当"持续分析"用，要按次预算，并留足备用。
+
+**鉴权**（HMAC-SHA256，±300 秒窗口）：
+
+```python
+x-key-id    = key_id
+x-timestamp = str(int(time.time()))
+x-signature = base64(HMAC_SHA256(secret_key, timestamp))
+```
+
+**三步流程**：`POST /api/v2/video/upload/presign` → `PUT uploadUrl`（Content-Type: video/mp4）
+→ `POST /api/v3/video/process` `{objectKey, capability:"rppg"}`。
+返回 `data.cardiac.{hr, sqi, hrv}`、`data.breathing_rate`、`data.tokens_deducted`。
+
+**四个必须知道的约束**：
+
+1. **采样下限 15 秒，最好 30 秒。** 一个视频块换一个采样点，不可能"每 2 秒一个点"。
+   所以提示节奏从「每轮」变成「每 30 秒」。`wrap`（连续两轮高负荷）逻辑仍然成立，
+   但 `probe` 的响应会慢一个块（约 30 秒 + 处理时间）。
+2. **`User-Agent` 必须伪装成浏览器。** FacePhys 挂在 Cloudflare 后面，默认的
+   `Python-urllib/3.x` 会被 WAF 直接 403，响应体是 `error code: 1010`。
+   看起来像签名错，其实跟签名没关系——`BROWSER_UA` 常量钉住了这一点。
+3. **`sqi` 阈值是 0.30，不是 0.5。** 官方文档：`sqi >= 0.30` 即可用。实测两段视频
+   的 sqi 只有 0.31 / 0.38，沿用默认 `MIN_QUALITY=0.5` 会把全部有效数据丢掉。
+   视频形态必须设 `MIN_QUALITY=0.25`。
+4. **基线要少采几个点。** 60 秒基线在视频形态下只有 2 个采样，`BASELINE_MIN_SAMPLES=8`
+   永远不满足。视频形态建议 `BASELINE_SECONDS=60` + `BASELINE_MIN_SAMPLES=2`。
+
+候选人侧要配合的地方：浏览器用 `MediaRecorder` 每 ~30 秒切一段，走
+`{"type":"video_chunk","t":<秒>,"data":"<base64>","ct":"video/webm"}` 发上来。
+格式支持 MP4 / MOV / AVI / WebM，分辨率 ≥ 640×480，正面人脸占画面 20% 以上。
+
+
 
 默认已经覆盖最常见的几十种命名（`data.heart_rate` / `hr` / `result.physio.bpm` …），
 命不中就用 `|` 分隔多个候选路径：

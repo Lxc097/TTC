@@ -44,7 +44,10 @@ def _load_dotenv(path: Path) -> None:
         os.environ.setdefault(k, v)
 
 
-_load_dotenv(Path(__file__).with_name(".env"))
+# 测试/CI 里设 TTC_SKIP_DOTENV=1，避免开发者本地 .env 影响测试结果
+# （本地 .env 里 VISION_PROVIDER=facephys 会让逐帧管道的测试全部失效）
+if os.getenv("TTC_SKIP_DOTENV") != "1":
+    _load_dotenv(Path(__file__).with_name(".env"))
 
 
 def _f(name: str, default: float) -> float:

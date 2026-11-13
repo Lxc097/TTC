@@ -87,9 +87,18 @@ class MockProvider:
 
 
 def get_provider() -> VisionProvider:
-    """按环境变量选择实现。整个后端只在这里 new 一次。"""
-    if config.VISION_PROVIDER == "real":
-        from vision_http import HttpVisionProvider   # 延迟导入，mock 模式不需要它
+    """按环境变量选择实现。整个后端只在这里 new 一次。
+
+    - mock      : 假数据（默认，前端联调 / demo 兜底）
+    - facephys  : FacePhys 视频接口（视频形态，30 秒一个采样点）
+    - real      : 通用 HTTP 适配（单帧 / 片段）
+    """
+    kind = config.VISION_PROVIDER
+    if kind == "facephys":
+        from vision_facephys import FacePhysProvider
+        return FacePhysProvider()
+    if kind == "real":
+        from vision_http import HttpVisionProvider   # 延迟导入，mock 模式不需要
         return HttpVisionProvider()
     return MockProvider()
 

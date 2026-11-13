@@ -55,6 +55,13 @@ class PipelineCase(unittest.IsolatedAsyncioTestCase):
         config.BASELINE_MIN_SAMPLES = 3
         config.SAMPLE_MIN_INTERVAL = 0.3
 
+        # 这组测试验证的是**逐帧管道**，必须强制回到 frame 模式。
+        # 否则本地 .env 一改成 facephys，VIDEO_MODE 就会把 push_frame 的事件
+        # 关掉，所有用例一起挂——那不是代码坏了，是环境串了。
+        self._orig_modes = (ws_mod.VIDEO_MODE, ws_mod.SEGMENT_MODE)
+        ws_mod.VIDEO_MODE = False
+        ws_mod.SEGMENT_MODE = False
+
         self.provider = CountingProvider()
         self._orig_provider = ws_mod.PROVIDER
         ws_mod.PROVIDER = self.provider
@@ -71,6 +78,7 @@ class PipelineCase(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
         config.BASELINE_SECONDS, config.BASELINE_MIN_SAMPLES, \
             config.SAMPLE_MIN_INTERVAL = self._orig
+        ws_mod.VIDEO_MODE, ws_mod.SEGMENT_MODE = self._orig_modes
         ws_mod.PROVIDER = self._orig_provider
 
     async def drain(self, seconds: float) -> None:

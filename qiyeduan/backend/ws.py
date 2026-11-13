@@ -19,12 +19,15 @@ from typing import Any
 
 import config
 import report as report_mod
-from engine import Behavior, Turn, judge_turn, summarize_turn
+from engine import Behavior, PhysioSample, Turn, judge_turn, summarize_turn
 from store import STORE, Room, Session
 from vision import get_provider
 
 PROVIDER = get_provider()
 
+# 视频形态（FacePhys）：一次要一段 ≥15 秒的视频，一个视频块换一个采样点。
+# 这条路完全不经过逐帧背压，走 on_video_chunk。
+VIDEO_MODE = bool(getattr(PROVIDER, "wants_video", False))
 # 片段形态（VISION_API_MODE=segment）时，必须保留连续帧给 rPPG 用，
 # 不能沿用「只保留最新一帧」的背压，否则视频被打散成每 2 秒一帧。
 SEGMENT_MODE = bool(getattr(PROVIDER, "wants_segment", False))
@@ -45,6 +48,7 @@ class RoomHub:
         self.worker: asyncio.Task | None = None
         self.consent_warned = False
         self.seg_buffer: deque[bytes] = deque(maxlen=SEGMENT_FRAMES)
+        self.video_busy = False      # 视频形态：同一时间只允许一段在分析
 
     # ---------------- 连接管理 ----------------
     def add(self, role: str, ws) -> None:
@@ -96,7 +100,8 @@ class RoomHub:
         self.latest_t = t
         if SEGMENT_MODE:
             self.seg_buffer.append(frame)   # 片段形态必须保留连续帧
-        self.frame_ready.set()         # 通知 worker 有新帧
+        if not VIDEO_MODE:
+            self.frame_ready.set()     # 视频形态不走逐帧路径，别唤醒 worker
 
     # ---------------- 后台视觉 worker ----------------
     async def _vision_worker(self) -> None:
@@ -148,27 +153,72 @@ class RoomHub:
                 await asyncio.sleep(config.SAMPLE_MIN_INTERVAL)
                 continue
 
-            self.room.baseline.add(sample)
-            # 硬上限：窗口两倍时长后强制封板，避免一直「建立基线中」
-            if t > config.BASELINE_SECONDS * 2 and not self.room.baseline.ready:
-                self.room.baseline.freeze()
-
-            session.samples.append(sample)
-            z = self.room.baseline.load_z(sample)
-
-            await self.send("interviewer", {
-                "type": "signal",
-                "t": round(t, 2),
-                "load_z": round(z, 2),
-                "hr": sample.hr,
-                "quality": round(sample.quality, 2),
-                "face_count": sample.face_count,
-                "baseline_ready": self.room.baseline.ready,
-                "baseline_remaining": round(self.room.baseline.remaining(t), 1),
-            })
+            await self._emit_sample(sample, t)
 
             # 限制云端 API 调用频率，省钱也省延迟
             await asyncio.sleep(config.SAMPLE_MIN_INTERVAL)
+
+    async def _emit_sample(self, sample: PhysioSample, t: float) -> None:
+        """采样落库 + 算负荷 + 推给面试官。逐帧路径和视频路径共用这一段。"""
+        session = self.session
+        if session is None:
+            return
+        self.room.baseline.add(sample)
+        # 硬上限：窗口两倍时长后强制封板，避免一直「建立基线中」
+        if t > config.BASELINE_SECONDS * 2 and not self.room.baseline.ready:
+            self.room.baseline.freeze()
+
+        session.samples.append(sample)
+        z = self.room.baseline.load_z(sample)
+
+        await self.send("interviewer", {
+            "type": "signal",
+            "t": round(t, 2),
+            "load_z": round(z, 2),
+            "hr": sample.hr,
+            "quality": round(sample.quality, 2),
+            "face_count": sample.face_count,
+            "baseline_ready": self.room.baseline.ready,
+            "baseline_remaining": round(self.room.baseline.remaining(t), 1),
+        })
+
+    # ---------------- 视频形态（FacePhys） ----------------
+    async def on_video_chunk(self, data_b64: str, t: float,
+                             content_type: str = "video/mp4") -> None:
+        """一段视频换一个采样点。
+
+        背压：同一时间只允许一段在分析。上一段没回来时到达的新段直接丢弃，
+        因为视频接口本身要 5~30 秒，排队只会让延迟越来越长。
+        """
+        session = self.session
+        if session is None or not session.consent:
+            return
+        if self.video_busy:
+            await self.send("interviewer", {
+                "type": "status", "state": "degraded",
+                "reason": "上一段视频还在分析，本段已跳过", "t": t})
+            return
+        try:
+            video = base64.b64decode(data_b64.split(",", 1)[-1])
+        except Exception:
+            return
+        if not video:
+            return
+
+        self.video_busy = True
+        try:
+            sample = await asyncio.to_thread(
+                PROVIDER.sample_video, video, t, content_type)
+        except Exception as exc:
+            await self.send("interviewer", {
+                "type": "status", "state": "degraded",
+                "reason": f"facephys_error: {exc}"[:200], "t": t})
+            return
+        finally:
+            self.video_busy = False
+
+        if sample is not None:
+            await self._emit_sample(sample, t)
 
     # ---------------- 轮次处理 ----------------
     async def on_turn_start(self, t: float) -> None:
@@ -295,6 +345,13 @@ async def handle_message(hub: RoomHub, role: str, msg: dict) -> None:
             return
         frame = _decode_frame(msg.get("img", ""))
         hub.push_frame(frame, t)
+
+    elif mtype == "video_chunk":
+        # 视频形态：候选人浏览器每 ~30 秒送一段 webm/mp4
+        if role != "candidate":
+            return
+        await hub.on_video_chunk(msg.get("data", ""), t,
+                                 msg.get("ct", "video/mp4"))
 
     elif mtype == "turn_start":
         await hub.on_turn_start(t)

@@ -84,7 +84,7 @@ class TestLoadDotenv(unittest.TestCase):
 
 class TestDefaults(unittest.TestCase):
     def test_provider_is_known(self):
-        self.assertIn(config.VISION_PROVIDER, ("mock", "real"))
+        self.assertIn(config.VISION_PROVIDER, ("mock", "real", "facephys"))
 
     def test_thresholds_sane(self):
         self.assertGreater(config.BASELINE_SECONDS, 0)
