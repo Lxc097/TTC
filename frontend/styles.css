@@ -575,22 +575,52 @@ body { min-height: 100dvh; }
   body.room-wide #trSend { min-height: 40px; }
 }
 
-/* ---------- 横屏手机：回到左右两栏，视频占满左侧 ---------- */
-@media (orientation: landscape) and (max-height: 520px) {
+/* ---------- 横屏（面试间）：回到左右两栏，视频占满左侧 ---------- */
+@media (orientation: landscape) and (max-height: 560px) {
   body.room-wide { height: 100dvh; overflow: hidden; }
   body.room-wide .shell { height: 100dvh; min-height: 0; }
   body.room-wide .nav-in { height: 44px; }
   body.room-wide .page { padding: 6px 12px; gap: 6px; }
+  body.room-wide .room-title { font-size: 16px; }
+  body.room-wide .room-sub { font-size: 12px; }
   body.room-wide .join-line,
   body.room-wide .interview-main > .tiny { display: none; }
   body.room-wide .interview-shell {
-    grid-template-columns: minmax(0, 1fr) 300px;
+    grid-template-columns: minmax(0, 1fr) 320px;
     grid-template-rows: minmax(0, 1fr);
     gap: 8px;
   }
   body.room-wide .stage-xl { flex: 1; height: auto; min-height: 0; max-height: none; }
   body.room-wide .interview-side { height: 100%; overflow-y: auto; gap: 8px; }
   body.room-wide .cue-wrap { position: static; background: none; }
-  body.room-wide .minutes-body { max-height: 24dvh; }
+  body.room-wide .minutes-body { max-height: 22dvh; }
 }
+
+/* ---------- 进面试间的横屏提示（只在手机房间出现） ---------- */
+.rotate-hint {
+  position: fixed; inset: 0; z-index: 999; padding: 22px;
+  background: rgba(29, 29, 29, .66);
+  display: flex; align-items: center; justify-content: center;
+}
+.rotate-hint .rotate-card {
+  width: 100%; max-width: 330px; background: var(--paper); border-radius: var(--r-xl);
+  padding: 22px; text-align: center; box-shadow: var(--shadow-pop);
+}
+.rotate-hint .rotate-icon {
+  width: 58px; height: 36px; margin: 2px auto 14px; position: relative;
+  border: 2px solid var(--orange); border-radius: 7px;
+  animation: rotateNudge 2s ease-in-out infinite;
+}
+.rotate-hint .rotate-icon::after {
+  content: ""; position: absolute; right: -7px; bottom: -7px;
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid var(--orange); background: var(--paper);
+}
+@keyframes rotateNudge { 0%, 100% { transform: rotate(0); } 45%, 55% { transform: rotate(90deg); } }
+.rotate-hint b { display: block; font-size: 17px; margin-bottom: 6px; }
+.rotate-hint p { font-size: 14px; color: var(--ink-2); line-height: 1.65; margin-bottom: 16px; }
+.rotate-hint .rotate-actions { display: flex; flex-direction: column; gap: 8px; }
+.rotate-hint .rotate-tip { font-size: 12px; color: var(--red); min-height: 16px; margin: 8px 0 0; }
+@media (orientation: landscape) { .rotate-hint { display: none !important; } }
+@media (prefers-reduced-motion: reduce) { .rotate-hint .rotate-icon { animation: none; } }
 

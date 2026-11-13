@@ -234,6 +234,8 @@ function reportData(id, role) {
 const routes = {};
 function render() {
   clearTimers();
+  clearRotateHint();
+  exitLandscape();
   document.body.classList.remove('room-wide');
   const segs = (location.hash || '#/').replace(/^#\/?/, '').split('/').filter(Boolean);
   // 旧版候选人/模拟路由不再承担正式面试；统一进入独立候选人端。
@@ -693,6 +695,49 @@ const CANDIDATE_LINES = [
 ];
 const KIND_TITLE = { probe: '⚠ 追问', upgrade: '↑ 加难度', wrap: '○ 收一下' };
 
+/* ---------- 面试间横屏：布局交给 CSS，这里负责提示与「尽力锁定」 ---------- */
+function clearRotateHint() { const el = $('#rotateHint'); if (el) el.remove(); }
+function exitLandscape() {
+  try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (_) {}
+  try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (_) {}
+}
+async function requestLandscape() {
+  try {
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+      await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+    }
+  } catch (_) { /* 全屏被拒也继续试锁定 */ }
+  try {
+    if (screen.orientation && screen.orientation.lock) {
+      await screen.orientation.lock('landscape');
+      return true;
+    }
+  } catch (_) { /* iOS Safari 没有 lock；Android 非全屏也会失败 */ }
+  return false;
+}
+function showRotateHint() {
+  if (!isMobile() || document.getElementById('rotateHint')) return;
+  if (sessionStorage.getItem('ttc_rotate_skip') === '1') return;
+  const hint = document.createElement('div');
+  hint.className = 'rotate-hint';
+  hint.id = 'rotateHint';
+  hint.innerHTML = '<div class="rotate-card"><div class="rotate-icon"></div>'
+    + '<b>把手机横过来</b>'
+    + '<p>面试间按横屏设计：横过来能同时看清候选人画面、纪要和追问提示。旋转后本提示自动消失。</p>'
+    + '<div class="rotate-actions"><button class="btn btn-primary" id="rotateFull" type="button">横屏全屏使用</button>'
+    + '<button class="btn btn-quiet" id="rotateSkip" type="button">继续竖屏</button></div>'
+    + '<p class="rotate-tip" id="rotateTip"></p></div>';
+  document.body.appendChild(hint);
+  $('#rotateSkip').onclick = () => {
+    sessionStorage.setItem('ttc_rotate_skip', '1');
+    hint.remove();
+  };
+  $('#rotateFull').onclick = async () => {
+    const ok = await requestLandscape();
+    if (!ok) { const tip = $('#rotateTip'); if (tip) tip.textContent = '这个浏览器不支持自动横屏，请手动把手机转过来。'; }
+  };
+}
+
 routes['/interviewer/room/:id'] = {
   key: 'interviewerRoom',
   render(p) {
@@ -761,6 +806,7 @@ routes['/interviewer/room/:id'] = {
         }).catch(fallbackReport);
       }
     });
+    showRotateHint();
     const sw = $('#switchRole'); if (sw) sw.addEventListener('click', () => { LS.del('corgi_role'); location.hash = '#/'; render(); });
   }
 };

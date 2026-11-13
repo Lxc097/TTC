@@ -34,6 +34,8 @@
   /* 设备识别：布局交给 CSS 媒体查询，这里只标记设备类型供运行期分支使用 */
   const MOBILE_MQ = window.matchMedia('(max-width: 760px)');
   const isMobile = () => MOBILE_MQ.matches;
+  // 微信内置浏览器（X5 / WKWebView）基本拿不到摄像头，要提示用户换系统浏览器
+  const IN_WECHAT = /MicroMessenger/i.test(navigator.userAgent || '');
   function syncDevice() {
     const touch = (navigator.maxTouchPoints || 0) > 0;
     document.documentElement.dataset.device = isMobile() ? 'mobile' : (touch ? 'tablet' : 'desktop');
@@ -102,6 +104,9 @@
 
   function disconnect() {
     state.leaving = true;
+    clearRotateHint();
+    exitLandscape();
+    sessionStorage.removeItem('ttc_rotate_skip');
     stopMicrophone();
     stopCamera();
     const socket = state.ws;
@@ -118,6 +123,7 @@
 
   function renderJoin(message) {
     document.body.classList.remove('room-wide');
+    clearRotateHint();
     app.innerHTML = '<div class="intro"><div class="intro-copy">'
       + '<span class="eyebrow">TTC · 正式面试</span><h1>认真对话，<br>也看见自己的进步。</h1>'
       + '<p class="lede">输入企业提供的六位房间号。面试结束后，这里会展示你的对话记录和基于实际回答的表达建议。</p>'
@@ -165,6 +171,7 @@
 
   function renderConsent() {
     document.body.classList.remove('room-wide');
+    clearRotateHint();
     const room = state.room;
     app.innerHTML = '<button class="back-link" id="back-join" type="button">← 返回输入房间号</button>'
       + '<div class="page-head"><span class="eyebrow">面试前确认</span><h1>这是你的面试空间</h1><p>请核对岗位和房间号，再决定是否授权画面分析。不同意也能通过文字或主动开启的语音转写参与。</p>'
@@ -191,6 +198,56 @@
     show('reconnect-button', kind === 'off');
   }
 
+  /* ---------- 面试间横屏：网页不能强制转屏，能做的只有「横屏布局 + 提示 + 尽力锁定」 ---------- */
+  function clearRotateHint() {
+    const hint = document.getElementById('rotateHint');
+    if (hint) hint.remove();
+  }
+
+  async function requestLandscape() {
+    try {
+      if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+      }
+    } catch (_) { /* 全屏被拒就继续试锁定 */ }
+    try {
+      if (screen.orientation && screen.orientation.lock) {
+        await screen.orientation.lock('landscape');
+        return true;
+      }
+    } catch (_) { /* iOS Safari 没有 lock，Android 非全屏也会失败 */ }
+    return false;
+  }
+
+  function exitLandscape() {
+    try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (_) {}
+    try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (_) {}
+  }
+
+  function showRotateHint() {
+    if (!isMobile() || !state.room) return;
+    if (document.getElementById('rotateHint')) return;
+    if (sessionStorage.getItem('ttc_rotate_skip') === '1') return;
+    const hint = document.createElement('div');
+    hint.className = 'rotate-hint';
+    hint.id = 'rotateHint';
+    hint.innerHTML = '<div class="rotate-card"><div class="rotate-icon"></div>'
+      + '<b>把手机横过来</b>'
+      + '<p>面试间按横屏设计：横过来能同时看到画面、纪要和回答框。旋转手机后这个提示会自动消失。</p>'
+      + '<div class="rotate-actions"><button class="btn btn-primary" id="rotateFull" type="button">横屏全屏使用</button>'
+      + '<button class="btn btn-quiet" id="rotateSkip" type="button">继续竖屏</button></div>'
+      + '<p class="rotate-tip" id="rotateTip"></p></div>';
+    document.body.appendChild(hint);
+    document.getElementById('rotateSkip').onclick = () => {
+      sessionStorage.setItem('ttc_rotate_skip', '1');
+      hint.remove();
+    };
+    document.getElementById('rotateFull').onclick = async () => {
+      const ok = await requestLandscape();
+      if (!ok) text('rotateTip', '这个浏览器不支持自动横屏，请手动把手机转过来。');
+    };
+  }
+
   function renderRoom() {
     document.body.classList.add('room-wide');
     const room = state.room;
@@ -198,9 +255,10 @@
       + '<div class="room-meta"><span class="pill orange">房间 ' + esc(room.code) + '</span><span id="peer-pill" class="pill">等待面试官连接</span><span class="pill">画面分析：' + (state.consent ? '已授权，摄像头仍需主动开启' : '未授权') + '</span></div>'
       + '<button id="leave-room" class="btn btn-danger btn-leave" type="button">' + PHONE_ICON + ' 离开面试</button></div>'
       + '<div class="connection-bar" role="status"><span id="connection-dot" class="connection-dot"></span><span id="connection-text">正在连接房间…</span><button id="reconnect-button" class="btn btn-quiet hidden" type="button">重连</button></div>'
-      + '<div class="room-layout"><div class="room-main"><section class="card video-card"><div class="video-stage"><video id="camera-preview" class="preview" autoplay muted playsinline aria-label="我的摄像头预览"></video><div id="video-placeholder" class="video-empty">开启摄像头后，你的画面会显示在这里</div><span class="video-tag">我的画面</span></div></section>'
+      + (IN_WECHAT ? '<div class="notice">你是从微信里打开的：微信内置浏览器调不到摄像头和麦克风。点右上角「…」→「在浏览器打开」，再回来开摄像头。</div>' : '')
+      + '<div class="room-layout"><div class="room-main"><section class="card video-card"><div class="video-stage"><video id="camera-preview" class="preview" autoplay muted playsinline aria-label="我的摄像头预览"></video><div id="video-placeholder" class="video-empty"><span>' + (state.consent ? '开启摄像头后，你的画面会显示在这里' : '你未授权画面分析，摄像头不可开启') + '</span><button id="camera-cta" class="btn btn-soft" type="button" ' + (state.consent ? '' : 'disabled') + '>' + (state.consent ? '开启摄像头' : '需要先授权画面') + '</button></div><span class="video-tag">我的画面</span></div></section>'
       + '<section class="card answer-bar"><form id="answer-form"><textarea id="answer-text" class="answer-box" maxlength="1000" placeholder="写下你的回答…" aria-label="回答内容"></textarea><button id="send-answer" type="submit" class="btn btn-primary">发送</button></form><p id="answer-status" class="device-status" role="status"></p></section></div>'
-      + '<aside class="room-side"><section class="card section-card"><h2>我的设备</h2><p>设备不会自动开启。语音由后端转写；画面只在获得授权后传送。</p><div class="device-actions"><button id="mic-button" class="btn btn-quiet" type="button" disabled>检查语音转写…</button><button id="camera-button" class="btn btn-quiet" type="button" ' + (state.consent ? '' : 'disabled') + '>开启摄像头</button></div><p id="mic-status" class="device-status">麦克风未开启。</p><p id="camera-status" class="device-status">' + (state.consent ? '摄像头未开启，不会发送画面。' : '你未授权画面分析，摄像头不可开启。') + '</p></section>'
+      + '<aside class="room-side"><section class="card section-card"><h2>我的设备</h2><p>设备不会自动开启。语音由后端转写；画面只在获得授权后传送。</p><div class="device-actions"><button id="mic-button" class="btn btn-quiet" type="button" disabled>检查语音转写…</button><button id="camera-button" class="btn btn-quiet" type="button" ' + (state.consent ? '' : 'disabled') + '>开启摄像头</button>' + (state.consent ? '' : '<button id="reconsent" class="btn btn-soft" type="button">重新选择画面授权</button>') + '</div><p id="mic-status" class="device-status">麦克风未开启。</p><p id="camera-status" class="device-status">' + (state.consent ? '摄像头未开启，不会发送画面。' : '你未授权画面分析，摄像头不可开启。') + '</p></section>'
       + '<section class="card section-card minutes-card"><h2>本场对话纪要</h2><p>来自双方真实发送的文字与语音转写。它不会替代视频通话。</p><div id="transcript-list" class="transcript-list" aria-live="polite"><p class="transcript-empty">还没有纪要。面试官连接后，你们可以开始对话。</p></div></section>'
       + '<section id="record-request" class="card section-card record-request hidden"><h3>本轮可录制核实片段</h3><p id="record-request-copy" class="muted"></p><button id="record-button" class="btn btn-soft" type="button">同意录制本段</button><button id="decline-record" class="btn btn-quiet" type="button">跳过</button><p id="record-status" class="device-status" role="status"></p></section>'
       + '<section class="card section-card"><h2>本场边界</h2><p>候选人离开只会关闭自己的连接，不会结束面试官的房间。面试官结束后，个人复盘才会出现。</p><div class="room-footer"><span>房间号 ' + esc(room.code) + '</span></div></section></aside></div>';
@@ -220,9 +278,14 @@
     };
     document.getElementById('mic-button').onclick = () => state.microphone ? stopMicrophone() : startMicrophone();
     document.getElementById('camera-button').onclick = () => state.cameraStream ? stopCamera() : startCamera();
+    var ctaBtn = document.getElementById('camera-cta');
+    if (ctaBtn) ctaBtn.onclick = () => state.cameraStream ? stopCamera() : startCamera();
+    var reBtn = document.getElementById('reconsent');
+    if (reBtn) reBtn.onclick = () => renderConsent();
     document.getElementById('record-button').onclick = recordClip;
     document.getElementById('decline-record').onclick = () => { state.recordRequest = null; show('record-request', false); };
     checkStt();
+    showRotateHint();
   }
 
   async function checkStt() {
@@ -368,10 +431,28 @@
     });
   }
 
+  /* 摄像头开工失败时给出能照着做的原因，别再只说"检查权限" */
+  function cameraErrorText(err) {
+    const name = err && err.name ? err.name : '';
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      return IN_WECHAT
+        ? '微信内置浏览器拒绝了摄像头：点右上角「…」→「在浏览器打开」再试。'
+        : '摄像头权限被拒绝。请在地址栏的网站设置里允许「相机」，iPhone 还要到 设置 → Safari → 相机 里放行，然后重试。';
+    }
+    if (name === 'NotFoundError' || name === 'OverconstrainedError') return '没有找到可用的摄像头。';
+    if (name === 'NotReadableError' || name === 'AbortError') return '摄像头被其他应用占用，先关掉相机/视频通话类应用再重试。';
+    return '摄像头无法开启（' + (name || '未知错误') + '）。请检查权限，或改用系统浏览器打开。';
+  }
+
   async function startCamera() {
-    if (!state.consent) return;
-    if (!wsReady()) { text('camera-status', '请先连接房间，再开启摄像头。'); return; }
-    if (!navigator.mediaDevices?.getUserMedia) { text('camera-status', '当前浏览器不支持摄像头。'); return; }
+    if (!state.consent) { text('camera-status', '你选择了不授权画面分析，摄像头打不开。点「重新选择画面授权」后可以改。'); return; }
+    if (!wsReady()) { text('camera-status', '还没连上房间，等上方显示"已连接到真实面试房间"再开摄像头。'); return; }
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      text('camera-status', IN_WECHAT
+        ? '微信内置浏览器不能调用摄像头：点右上角「…」→「在浏览器打开」再试。'
+        : '当前浏览器不支持摄像头（需要 https 地址，或在本机 localhost 打开）。');
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},frameRate:{ideal:5}},audio:false});
       if (!wsReady()) { stream.getTracks().forEach((track) => track.stop()); return; }
@@ -402,7 +483,7 @@
       text('camera-button','停止摄像头');
       // 一场面试几十分钟，手机上尽量别让屏幕自动熄灭
       try { if (navigator.wakeLock) state.wakeLock = await navigator.wakeLock.request('screen'); } catch (_) { state.wakeLock = null; }
-    } catch (_) { stopCamera(); text('camera-status','摄像头无法开启。请检查权限或设备占用。'); }
+    } catch (err) { stopCamera(); text('camera-status', cameraErrorText(err)); }
   }
 
   async function recordClip() {
@@ -462,6 +543,7 @@
 
   function renderReport(report) {
     document.body.classList.remove('room-wide');
+    clearRotateHint();
     const observations = Array.isArray(report.observations) ? report.observations : [];
     const transcript = Array.isArray(report.transcript) ? report.transcript : [];
     const summary = typeof report.summary === 'string' ? report.summary : '本场面试已结束。';

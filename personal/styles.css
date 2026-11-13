@@ -50,6 +50,9 @@ body.room-wide .room-side{min-height:0;overflow-y:auto}
 /* =========================================================
    手机适配 · 只追加覆盖
    ========================================================= */
+.video-empty{gap:10px}
+/* 视频区里的「开启摄像头」按钮只在手机版出现，桌面端保持原样 */
+.video-empty .btn{display:none;min-height:40px}
 :root{--kb:0px;--safe-b:env(safe-area-inset-bottom,0px)}
 html{-webkit-text-size-adjust:100%}
 body{min-height:100dvh}
@@ -74,6 +77,7 @@ body{min-height:100dvh}
 /* ---------- 候选人房间：单屏 App 态 ---------- */
 @media(max-width:900px){
   body.room-wide{height:calc(100dvh - var(--kb,0px));overflow:hidden}
+  .video-empty .btn{display:inline-flex}
   body.room-wide .site-footer{display:none}
   body.room-wide #app{padding-block:8px calc(8px + var(--safe-b))}
   body.room-wide .page-head{
@@ -107,13 +111,39 @@ body{min-height:100dvh}
   body.room-wide .answer-bar .btn{min-height:44px}
 }
 
-/* ---------- 横屏手机：左画面右纪要 ---------- */
-@media (orientation:landscape) and (max-height:520px){
-  body.room-wide{height:100dvh}
+/* ---------- 横屏（面试间专用）：左画面 + 右纪要 ---------- */
+@media (orientation:landscape) and (max-height:560px){
+  body.room-wide{height:100dvh;overflow:hidden}
+  body.room-wide #app{padding-block:6px}
+  body.room-wide .page-head{grid-template-columns:minmax(0,1fr) auto;margin-bottom:4px;gap:4px}
+  body.room-wide .page-head h1{font-size:1rem}
+  body.room-wide .page-head .room-meta{display:none}      /* 横屏竖向空间宝贵，先给画面 */
+  body.room-wide .connection-bar{margin-bottom:4px;padding:3px 8px;font-size:.74rem}
   body.room-wide .room-layout{
-    grid-template-columns:minmax(0,1fr) 280px;
+    grid-template-columns:minmax(0,1fr) 320px;
     grid-template-rows:minmax(0,1fr);
+    gap:10px;
   }
-  body.room-wide .video-stage{height:40dvh;max-height:200px}
+  body.room-wide .room-main{min-height:0;gap:6px}
+  body.room-wide .video-card{flex:1;min-height:0;padding:6px}
+  body.room-wide .video-stage{flex:1;height:auto;min-height:0;max-height:none;aspect-ratio:auto}
+  body.room-wide .room-side{min-height:0;overflow-y:auto;gap:8px}
+  body.room-wide .room-side .minutes-card{order:-1}
+  body.room-wide .answer-bar{padding:6px 8px}
+  body.room-wide .answer-bar .answer-box{height:40px;min-height:40px}
+  body.room-wide .answer-bar .btn{min-height:40px}
 }
+
+/* ---------- 进面试间的横屏提示（只在手机房间出现） ---------- */
+.rotate-hint{position:fixed;inset:0;z-index:999;display:flex;align-items:center;justify-content:center;padding:22px;background:rgba(29,29,29,.66)}
+.rotate-hint .rotate-card{width:100%;max-width:330px;background:#fff;border-radius:20px;padding:22px;text-align:center;box-shadow:0 18px 50px rgba(0,0,0,.3)}
+.rotate-hint .rotate-icon{width:58px;height:36px;margin:2px auto 14px;border:2px solid #ff5c00;border-radius:7px;position:relative;animation:rotateNudge 2s ease-in-out infinite}
+.rotate-hint .rotate-icon::after{content:"";position:absolute;right:-7px;bottom:-7px;width:18px;height:18px;border:2px solid #ff5c00;border-radius:50%;background:#fff}
+@keyframes rotateNudge{0%,100%{transform:rotate(0)}45%,55%{transform:rotate(90deg)}}
+.rotate-hint b{display:block;font-size:1.05rem;margin-bottom:6px}
+.rotate-hint p{font-size:.85rem;color:#716b64;line-height:1.65;margin-bottom:16px}
+.rotate-hint .rotate-actions{display:flex;flex-direction:column;gap:8px}
+.rotate-hint .rotate-tip{font-size:.75rem;color:#a33130;min-height:16px;margin:8px 0 0}
+@media (orientation:landscape){.rotate-hint{display:none!important}}
+@media (prefers-reduced-motion:reduce){.rotate-hint .rotate-icon{animation:none}}
 
