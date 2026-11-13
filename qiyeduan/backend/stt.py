@@ -11,31 +11,37 @@
 """
 from __future__ import annotations
 
-import os
-import tempfile
 import time
-import uuid
-from pathlib import Path
 from typing import Optional
 
 import config
 
 
+MIME_BY_FMT = {
+    "wav": "audio/wav",
+    "mp3": "audio/mpeg",
+    "m4a": "audio/mp4",
+    "mp4": "audio/mp4",
+    "ogg": "audio/ogg",
+    "opus": "audio/opus",
+    "webm": "audio/webm",
+}
+
+
 class DashScopeASR:
     """百炼 qwen3-asr-flash。
 
-    SDK 要求传本地文件路径（`file://`），所以先把音频落一个临时文件。
-    临时目录可用 STT_TMP_DIR 覆盖 —— 受限环境（只读沙箱）里系统临时目录不可写，
-    指向工作区内即可。
+    实测两种传法：
+    - `file://路径`：SDK 会先把文件传上去，多一次往返，且音频要落盘。
+    - **data URI 内联 base64**：一次请求搞定，不写磁盘。现在用这个。
     """
 
     def __init__(self, api_key: str = "", model: str = "",
                  tmp_dir: str = "") -> None:
         self.api_key = api_key or config.STT_API_KEY
         self.model = model or config.STT_MODEL
-        self.tmp_dir = Path(tmp_dir or config.STT_TMP_DIR
-                            or tempfile.gettempdir())
-        self.tmp_dir.mkdir(parents=True, exist_ok=True)
+        # 保留 tmp_dir 只为兼容旧配置；内联模式不再落盘。
+        self.tmp_dir = tmp_dir or config.STT_TMP_DIR
         if not self.api_key:
             raise RuntimeError("缺少 STT_API_KEY（百炼的 key）")
         self.calls = 0
@@ -43,15 +49,21 @@ class DashScopeASR:
         self.last_latency = 0.0
         self.last_error = ""
 
-    def _transcribe_file(self, path: Path) -> Optional[str]:
+    @staticmethod
+    def _data_uri(audio: bytes, fmt: str) -> str:
+        import base64
+        mime = MIME_BY_FMT.get((fmt or "webm").lower(), "audio/webm")
+        return f"data:{mime};base64," + base64.b64encode(audio).decode()
+
+    def _call(self, audio: bytes, fmt: str) -> Optional[str]:
         import dashscope
         from dashscope import MultiModalConversation
 
         dashscope.api_key = self.api_key
         resp = MultiModalConversation.call(
             model=self.model,
-            messages=[{"role": "user",
-                       "content": [{"audio": f"file://{path}"}]}],
+            messages=[{"role": "user", "content": [
+                {"audio": self._data_uri(audio, fmt)}]}],
             result_format="message",
         )
         if getattr(resp, "status_code", 0) != 200:
@@ -59,8 +71,7 @@ class DashScopeASR:
                               f"{str(getattr(resp, 'message', ''))[:120]}"
             return None
         try:
-            content = resp.output["choices"][0]["message"]["content"]
-            for item in content:
+            for item in resp.output["choices"][0]["message"]["content"]:
                 txt = (item or {}).get("text")
                 if txt:
                     return str(txt).strip()
@@ -71,28 +82,20 @@ class DashScopeASR:
 
     def transcribe(self, audio: bytes,
                    fmt: str = "webm") -> Optional[str]:
-        """音频字节 → 文本。fmt 只用来决定临时文件后缀。"""
+        """音频字节 → 文本。失败返回 None，调用方静默降级。"""
         if not audio or len(audio) < 1200:
             # 太短的一段基本是静音/气口，不值得花一次调用
             return None
-
-        suffix = "." + (fmt or "webm").lstrip(".")
-        path = self.tmp_dir / f"asr_{uuid.uuid4().hex[:12]}{suffix}"
         t0 = time.monotonic()
+        self.calls += 1
         try:
-            path.write_bytes(audio)
-            self.calls += 1
-            return self._transcribe_file(path)
+            return self._call(audio, fmt)
         except Exception as exc:                     # noqa: BLE001
             self.failures += 1
             self.last_error = f"{type(exc).__name__}: {str(exc)[:140]}"
             return None
         finally:
             self.last_latency = time.monotonic() - t0
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
 
 
 _STT = None
