@@ -950,8 +950,26 @@ function setupMinutes(state) {
         if (txt) sendStt(state, txt, ev.results[i].isFinal);
       }
     };
-    rec.onerror = e => { label.textContent = '识别出错：' + (e.error || 'unknown'); };
-    rec.onend = () => { if (on) { try { rec.start(); } catch (e) {} } };
+    const ERR_HINT = {
+      network: '语音服务连不上（国内 Chrome 常见）→ 改用手打，或换 Edge 试试',
+      'service-not-allowed': '浏览器禁用了语音服务 → 改用手打',
+      'not-allowed': '麦克风权限被拒 → 允许后重试，或直接手打',
+      'audio-capture': '没检测到麦克风 → 用手打',
+      'no-speech': '没听到声音，再说一次',
+      aborted: '已取消',
+    };
+    rec.onerror = e => {
+      const code = e.error || 'unknown';
+      // 关键：出错必须停掉自动重启，否则 onend 会不停重连、无限报错。
+      on = false;
+      btn.textContent = '开启语音转写';
+      label.textContent = ERR_HINT[code] || ('识别出错：' + code);
+      if (code !== 'no-speech' && code !== 'aborted') {
+        toast('语音转写不可用，已切到手打输入');
+        input.focus();
+      }
+    };
+    rec.onend = () => { if (on) { try { rec.start(); } catch (e) { on = false; } } };
     try {
       rec.start();
       on = true;
