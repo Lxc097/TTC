@@ -456,7 +456,9 @@ function showCandidateLive(scene, roomId, audioOnly) {
   // 用服务端 ASR（录音分片上传），不用浏览器的 SpeechRecognition —— 国内不通。
   const capState = { get ws() { return ws; }, get ended() { return ended; } };
   const candCap = makeAudioCapturer(capState);
-  setTimeout(() => { candCap.start(); }, 1500);
+  setTimeout(() => {
+    candCap.start().then(r => { if (!r.ok) console.warn('[候选人录音]', r.code, r.msg); });
+  }, 1500);
 
   const send = o => { if (ws && ws.readyState === 1 && !ended) ws.send(JSON.stringify(o)); };
 
@@ -940,15 +942,34 @@ function makeAudioCapturer(state, chunkMs) {
   return {
     get running() { return on; },
     async start() {
-      if (on) return true;
+      if (on) return { ok: true };
+      // 不是 https 也不是 localhost 时，navigator.mediaDevices 根本不存在。
+      // 用局域网 IP（192.168.x.x）打开就会这样，但报错却像是权限问题。
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        return { ok: false, code: 'insecure',
+                 msg: '当前地址不是安全上下文：麦克风只在 https 或 localhost 下可用' };
+      }
       try {
         media = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
         });
-      } catch (e) { return false; }
+      } catch (e) {
+        const name = (e && e.name) || 'unknown';
+        const MAP = {
+          NotAllowedError: '麦克风被拒绝 → 点地址栏左侧的锁/图标 → 网站设置 → 麦克风改为「允许」后刷新',
+          PermissionDeniedError: '麦克风被拒绝 → 同上',
+          NotFoundError: '没检测到麦克风设备',
+          DevicesNotFoundError: '没检测到麦克风设备',
+          NotReadableError: '麦克风被别的程序占用（会议/录音软件），关掉再试',
+          TrackStartError: '麦克风被别的程序占用',
+          OverconstrainedError: '麦克风不支持当前参数',
+          SecurityError: '浏览器安全策略拦截了麦克风',
+        };
+        return { ok: false, code: name, msg: MAP[name] || ('麦克风启动失败：' + name) };
+      }
       on = true;
       loop();
-      return true;
+      return { ok: true };
     },
     stop() {
       on = false;
@@ -985,9 +1006,10 @@ function setupMinutes(state) {
       label.textContent = '已关闭';
       return;
     }
-    const ok = await cap.start();
-    if (!ok) {
-      label.textContent = '麦克风权限被拒 → 用下方手打';
+    const r = await cap.start();
+    if (!r.ok) {
+      label.textContent = r.msg;
+      toast(r.msg);
       input.focus();
       return;
     }
