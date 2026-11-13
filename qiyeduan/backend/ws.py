@@ -120,6 +120,18 @@ class RoomHub:
     def session(self) -> Session | None:
         return STORE.get_session(self.room.session_id) if self.room.session_id else None
 
+    def ensure_session(self) -> Session:
+        """没有会话就地建一个。
+
+        原来只有候选人进房才建会话，于是"面试官一个人连上来试麦克风"时
+        session 是 None，所有输入（转写、轮次、音频）都被静默丢弃 ——
+        表现就是"麦克风正常但一个字都不出"。
+        """
+        session = self.session
+        if session is None:
+            session = STORE.start_session(self.room, consent=False)
+        return session
+
     # ---------------- 帧入站（背压点） ----------------
     def push_frame(self, frame: bytes, t: float) -> None:
         self.latest_frame = frame      # 覆盖，不排队
@@ -273,9 +285,7 @@ class RoomHub:
 
         背压：同一时间只转一段。ASR 要 1~3 秒，排队只会让延迟越拖越长。
         """
-        session = self.session
-        if session is None:
-            return
+        session = self.ensure_session()
         if STT is None:
             if not self.stt_warned:
                 self.stt_warned = True
@@ -332,9 +342,7 @@ class RoomHub:
         发言人由**服务端按连接角色**判定，不信客户端自报的 speaker 字段 ——
         否则候选人可以把面试官的话标成自己说的。
         """
-        session = self.session
-        if session is None:
-            return
+        session = self.ensure_session()
         item = STORE.add_transcript(session, role, text, t, final)
         if not item["text"]:
             return

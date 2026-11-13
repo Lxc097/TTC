@@ -83,6 +83,9 @@ class PipelineCase(unittest.IsolatedAsyncioTestCase):
         # 单元测试既不该联网也不该花钱。需要测 LLM 的用例自己装假实现。
         self._orig_llm = ws_mod.LLM
         ws_mod.LLM = None
+        # 同理屏蔽真 ASR：本地 .env 里 STT_ENABLED=1 时，发音频会真的调百炼接口
+        self._orig_stt = ws_mod.STT
+        ws_mod.STT = None
 
         # 这组测试验证的是**逐帧管道**，必须强制回到 frame 模式。
         # 否则本地 .env 一改成 facephys，VIDEO_MODE 就会把 push_frame 的事件
@@ -110,6 +113,7 @@ class PipelineCase(unittest.IsolatedAsyncioTestCase):
         ws_mod.VIDEO_MODE, ws_mod.SEGMENT_MODE = self._orig_modes
         ws_mod.PROVIDER = self._orig_provider
         ws_mod.LLM = self._orig_llm
+        ws_mod.STT = self._orig_stt
 
     async def drain(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
@@ -748,6 +752,32 @@ class TestAudioChunk(PipelineCase):
             {"type": "audio_chunk",
              "data": base64.b64encode(b"w" * 5000).decode()})
         self.assertEqual(fake.calls, [], "上一段还在转，新段直接丢")
+
+
+class TestMinutesWithoutCandidate(PipelineCase):
+    """只有面试官连上来（候选人还没进）也要能记录。
+
+    真实踩过的坑：会话原本只在候选人进房时才创建，于是面试官一个人试麦克风时
+    session 是 None，所有输入被静默丢弃 —— 表现就是"麦克风正常但一个字都不出"。
+    """
+
+    async def test_stt_creates_session_when_alone(self):
+        self.assertIsNone(self.hub.session, "这个用例刻意不建会话")
+        await ws_mod.handle_message(
+            self.hub, "interviewer", {"type": "stt", "text": "喂，能听到吗"})
+        self.assertIsNotNone(self.hub.session)
+        self.assertEqual(len(self.hub.session.transcript), 1)
+        self.assertEqual(self.hub.session.transcript[0]["role"], "interviewer")
+
+    async def test_audio_chunk_creates_session_when_alone(self):
+        ws_mod.STT = FakeSTT("喂，能听到吗")
+        self.assertIsNone(self.hub.session)
+        await ws_mod.handle_message(
+            self.hub, "interviewer",
+            {"type": "audio_chunk",
+             "data": base64.b64encode(b"x" * 5000).decode()})
+        self.assertIsNotNone(self.hub.session)
+        self.assertEqual(len(self.hub.session.transcript), 1)
 
 
 if __name__ == "__main__":
