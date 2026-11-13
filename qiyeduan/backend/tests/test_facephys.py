@@ -213,6 +213,89 @@ class TestToSample(unittest.TestCase):
                      "remaining_tokens": 999000}, 1.0)
         self.assertEqual(p.tokens_left, 999000)
 
+    # ---- 呼吸率：实测会在三个不同层级出现，全都要能找到 ----
+    def test_breathing_rate_nested_in_hrv(self):
+        p = make()
+        s = p.to_sample({"hr": 73.0, "confidence": 0.4,
+                         "hrv": {"breathing_rate": 17.2}}, 1.0)
+        self.assertAlmostEqual(s.rr, 17.2,
+                               msg="文档示例里 breathing_rate 就在 hrv 里面")
+
+    def test_breathing_rate_on_cardiac(self):
+        p = make()
+        s = p.to_sample({"cardiac": {"hr": 73.0, "sqi": 0.4,
+                                     "breathing_rate": 14.0}}, 1.0)
+        self.assertAlmostEqual(s.rr, 14.0)
+
+    def test_breathing_rate_zero_is_rejected(self):
+        """缺数据时接口返回 0，必须判无效，否则基线会被 0 拉爆。"""
+        p = make()
+        s = p.to_sample({"hr": 73.0, "confidence": 0.4,
+                         "hrv": {"breathing_rate": 0}}, 1.0)
+        self.assertIsNone(s.rr)
+
+    def test_breathing_rate_out_of_range_rejected(self):
+        p = make()
+        s = p.to_sample({"breathing_rate": 200}, 1.0)
+        self.assertIsNone(s.rr)
+
+    # ---- 指标为什么缺失：以接口的 indicators_status 为准，不要猜字段集 ----
+    def test_rr_reason_from_indicators_status(self):
+        """rr 为空时要把接口给的真实原因透出来，前端才不会显示一个裸 None。"""
+        p = make()
+        p.to_sample({
+            "hr": 73.0, "confidence": 0.4,
+            "cardiac": {"hr": 73.0, "sqi": 0.4, "hr_list": []},
+            "indicators_status": {
+                "rr": {"status": "not_available",
+                       "reason": "呼吸率在本次检测中不可用"},
+                "sdnn": {"status": "not_available"},
+            },
+        }, 1.0)
+        self.assertEqual(p.last_rr_reason, "not_available")
+        self.assertIn("不可用", p.last_rr_detail)
+
+    def test_rr_reason_empty_when_present(self):
+        p = make()
+        p.to_sample({"hr": 73.0, "confidence": 0.4, "breathing_rate": 16.0}, 1.0)
+        self.assertEqual(p.last_rr_reason, "")
+
+    def test_hr_list_empty_means_no_hrv_chain(self):
+        """实测：hr_list 为空 → 没有逐拍间期 → 22 项 HRV 全部 not_available。"""
+        p = make()
+        p.to_sample({"cardiac": {"hr": 102.06, "sqi": 0.384, "hr_list": []}}, 1.0)
+        self.assertIsNone(p.last_rr_reason and None)  # 无 indicators_status 时不瞎猜
+        self.assertEqual(p.last_rr_reason, "not_returned")
+
+    # ---- 活体检测：接口白送的，支撑「是不是本人」 ----
+    def test_liveness_captured(self):
+        p = make()
+        p.to_sample({
+            "cardiac": {"hr": 73.0, "sqi": 0.4},
+            "liveness": {
+                "is_live": False, "liveness_score": 0,
+                "status": "no_face",
+                "rejected_reason": "insufficient_face_detections",
+                "signals": {"blink_rate": 0.702, "motion": 1},
+            },
+        }, 1.0)
+        self.assertFalse(p.last_liveness["is_live"])
+        self.assertEqual(p.last_liveness["status"], "no_face")
+        self.assertAlmostEqual(p.last_liveness["blink_rate"], 0.702)
+
+    def test_no_liveness_key_is_safe(self):
+        p = make()
+        p.to_sample({"cardiac": {"hr": 73.0, "sqi": 0.4}}, 1.0)
+        self.assertEqual(p.last_liveness, {})
+
+    def test_points_aliases(self):
+        """points_deducted / remaining_points 是历史别名，单位同样是 Token。"""
+        p = make()
+        p.to_sample({"hr": 70, "confidence": 0.5,
+                     "points_deducted": 1200, "remaining_points": 500000}, 1.0)
+        self.assertEqual(p.tokens_left, 500000)
+        self.assertEqual(p.last_deducted, 1200)
+
 
 class TestInterface(unittest.TestCase):
     def test_sample_returns_none_in_video_mode(self):

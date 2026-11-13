@@ -45,6 +45,12 @@ def index() -> FileResponse:
     return FileResponse(str(_static / "dev_candidate.html"))
 
 
+@app.get("/recorder")
+def recorder() -> FileResponse:
+    """候选人侧录制参考实现：每 30 秒切一段视频，走 video_chunk。"""
+    return FileResponse(str(_static / "dev_recorder.html"))
+
+
 @app.get("/api/config")
 def client_config() -> dict:
     """前端启动时拉一次，用于决定显示「建立基线中」还是「信号分析中」。"""

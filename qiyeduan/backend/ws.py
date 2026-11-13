@@ -171,16 +171,28 @@ class RoomHub:
         session.samples.append(sample)
         z = self.room.baseline.load_z(sample)
 
-        await self.send("interviewer", {
+        payload = {
             "type": "signal",
             "t": round(t, 2),
             "load_z": round(z, 2),
             "hr": sample.hr,
+            "rr": sample.rr,
             "quality": round(sample.quality, 2),
             "face_count": sample.face_count,
             "baseline_ready": self.room.baseline.ready,
             "baseline_remaining": round(self.room.baseline.remaining(t), 1),
-        })
+        }
+        # FacePhys 会白送活体检测，正好支撑「是不是本人」这条产品线。
+        # 注意：这只是**提示**，永不参与任何自动决策。
+        live = getattr(PROVIDER, "last_liveness", None)
+        if live:
+            payload["liveness"] = live
+        # 指标为什么缺失也要如实告诉前端，别让界面显示 None
+        rr_reason = getattr(PROVIDER, "last_rr_reason", "")
+        if rr_reason:
+            payload["rr_unavailable"] = rr_reason
+
+        await self.send("interviewer", payload)
 
     # ---------------- 视频形态（FacePhys） ----------------
     async def on_video_chunk(self, data_b64: str, t: float,

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -32,6 +33,26 @@ class FakeWS:
 
     def types(self) -> list[str]:
         return [m["type"] for m in self.msgs]
+
+
+class VideoProvider:
+    """模拟视频形态的 provider（FacePhys 的替身）。"""
+
+    wants_video = True
+    wants_segment = False
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def sample_video(self, video, t, ct="video/mp4"):
+        self.calls.append((len(video), t, ct))
+        return PhysioSample(t=t, hr=80.0, rr=15.0, quality=0.5, face_count=1)
+
+    def sample(self, frame, t):
+        return None
+
+    def sample_segment(self, frames, t):
+        return None
 
 
 class CountingProvider:
@@ -164,6 +185,59 @@ class TestConsentGate(PipelineCase):
         await self.drain(0.6)
         self.assertGreater(self.provider.calls, 0)
         self.assertIn("signal", self.iws.types())
+
+
+class TestVideoChunk(PipelineCase):
+    """视频形态（FacePhys）：一段视频换一个采样点，走 on_video_chunk。"""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.vp = VideoProvider()
+        ws_mod.PROVIDER = self.vp
+
+    async def test_chunk_emits_signal(self):
+        STORE.start_session(self.room, consent=True)
+        payload = base64.b64encode(b"fake-webm-bytes").decode()
+        await self.hub.on_video_chunk(payload, 30.0, "video/webm")
+
+        self.assertEqual(len(self.vp.calls), 1)
+        self.assertEqual(self.vp.calls[0][2], "video/webm")
+        self.assertIn("signal", self.iws.types())
+        self.assertEqual(len(self.hub.session.samples), 1)
+
+    async def test_chunk_dropped_when_busy(self):
+        """上一段没回来时到达的新段必须直接丢，排队只会越拖越长。"""
+        STORE.start_session(self.room, consent=True)
+        self.hub.video_busy = True
+        await self.hub.on_video_chunk(
+            base64.b64encode(b"x").decode(), 30.0)
+        self.assertEqual(self.vp.calls, [], "忙的时候不该发起新请求")
+        self.assertIn("status", self.iws.types())
+        self.assertNotIn("signal", self.iws.types())
+
+    async def test_chunk_ignored_without_consent(self):
+        STORE.start_session(self.room, consent=False)
+        await self.hub.on_video_chunk(
+            base64.b64encode(b"x").decode(), 30.0)
+        self.assertEqual(self.vp.calls, [], "未授权不该调用任何视觉 API")
+        self.assertEqual(self.hub.session.samples, [])
+
+    async def test_empty_payload_is_noop(self):
+        STORE.start_session(self.room, consent=True)
+        await self.hub.on_video_chunk("", 30.0)
+        self.assertEqual(self.vp.calls, [])
+
+    async def test_provider_error_degrades_not_crashes(self):
+        STORE.start_session(self.room, consent=True)
+
+        class Boom(VideoProvider):
+            def sample_video(self, video, t, ct="video/mp4"):
+                raise RuntimeError("oss upload failed")
+
+        ws_mod.PROVIDER = Boom()
+        await self.hub.on_video_chunk("eA==", 30.0)
+        self.assertIn("status", self.iws.types())
+        self.assertFalse(self.hub.video_busy, "出错后必须解开 busy 闸门")
 
 
 if __name__ == "__main__":

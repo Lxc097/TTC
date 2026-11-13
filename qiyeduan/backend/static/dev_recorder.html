@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>候选人侧录制参考实现 · 30 秒切片</title>
+<style>
+  :root { --bg:#faf8f5; --card:#fff; --line:#e6e1d8; --text:#242220;
+          --dim:#8a8279; --warm:#c9772f; --ok:#3a7d6a; --bad:#b3453e; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  header { padding:14px 22px; border-bottom:1px solid var(--line);
+           display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; }
+  .wrap { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);
+          gap:16px; padding:16px 22px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:16px; }
+  video { width:100%; border-radius:10px; background:#111; display:block; }
+  button { background:#fff; border:1px solid var(--line); color:var(--text);
+           padding:8px 15px; border-radius:9px; cursor:pointer; font-size:13px; }
+  button:hover { background:#f3efe8; }
+  button.primary { background:var(--warm); border-color:var(--warm); color:#fff; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  input { padding:7px 11px; border:1px solid var(--line); border-radius:8px;
+          font:inherit; width:130px; letter-spacing:2px; text-transform:uppercase; }
+  .bar { height:8px; background:#eee7dc; border-radius:4px; overflow:hidden; margin:10px 0 6px; }
+  .bar > i { display:block; height:100%; width:0; background:var(--warm);
+             transition:width .2s linear; }
+  .big { font:600 30px/1 Consolas,monospace; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .log { height:230px; overflow:auto; background:#1a1917; color:#c9c3ba;
+         border-radius:10px; padding:10px; font:12px/1.6 Consolas,monospace;
+         white-space:pre-wrap; }
+  .k { color:var(--dim); font-size:12px; }
+  .pill { font-size:11px; padding:2px 9px; border-radius:20px; border:1px solid var(--line); }
+  .pill.live { background:#fdeee1; border-color:#f0d5bd; color:#9a5a1c; }
+  .pill.on { background:#e7f3ef; border-color:#c9e2da; color:var(--ok); }
+  .hint { font-size:12px; color:var(--dim); margin-top:10px; line-height:1.7; }
+  code { background:#f2eee7; padding:1px 5px; border-radius:4px; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>候选人侧 · 30 秒切片录制</h1>
+  <span class="pill" id="wsState">未连接</span>
+  <span class="k">房间号</span>
+  <input id="code" placeholder="ABC123" maxlength="6">
+  <button class="primary" id="conn">连接</button>
+  <button id="start" disabled>开始面试</button>
+  <button id="stop" disabled>结束</button>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <video id="cam" autoplay muted playsinline></video>
+    <div class="bar"><i id="bar"></i></div>
+    <div class="row" style="justify-content:space-between">
+      <span class="big" id="count">--</span>
+      <span class="k" id="meta">等待开始</span>
+    </div>
+    <div class="hint">
+      每 <b>30 秒</b> 切成一段独立视频发给后端。用的是 <code>stop()</code> → <code>start()</code>
+      循环，<b>不是</b> <code>timeslice</code>——因为 FacePhys 要能独立解码的完整文件，
+      而 <code>timeslice</code> 切出来的第二段开始都不是独立可播的。
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between;margin-bottom:8px">
+      <span class="k">后端回执</span>
+      <span class="k" id="stats">切块 0 · 已发 0</span>
+    </div>
+    <div class="log" id="log"></div>
+  </div>
+</div>
+
+<script>
+const CHUNK_MS = 30000;          // 官方建议 30 秒；下限 15 秒
+const TARGET_W = 640, TARGET_H = 480;   // 分辨率越高→文件越大→上传越慢，640x480 足够 rPPG
+const BITRATE = 800_000;         // 约 3MB/30s，base64 后 4MB，低于 5MB 的跳过阈值
+const MAX_CHUNK_BYTES = 5 * 1024 * 1024;
+
+// 不同浏览器的编码支持不一样，按优先级挑
+const MIME_CANDIDATES = [
+  "video/webm;codecs=vp9", "video/webm;codecs=vp8",
+  "video/webm", "video/mp4",
+];
+
+const $ = s => document.querySelector(s);
+const log = s => { const el = $("#log"); el.textContent += s + "\n";
+                   el.scrollTop = el.scrollHeight; };
+
+let ws = null, stream = null, recorder = null;
+let running = false, t0 = 0, chunkIdx = 0, sentCount = 0, tickTimer = null, stopTimer = null;
+
+function pickMime() {
+  for (const m of MIME_CANDIDATES) if (MediaRecorder.isTypeSupported(m)) return m;
+  return "";
+}
+
+// ---------------- 连接 ----------------
+$("#conn").onclick = () => {
+  const code = ($("#code").value || "").trim().toUpperCase();
+  if (code.length !== 6) { alert("房间号是 6 位"); return; }
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws/room/${code}?role=candidate&consent=1`);
+  ws.onopen = () => {
+    $("#wsState").textContent = "已连接";
+    $("#wsState").className = "pill on";
+    $("#start").disabled = false;
+    log("已连接房间 " + code);
+  };
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    // 候选人侧在真实面试里**不该看到任何信号**，这里只打状态类消息
+    if (m.type === "signal") return;
+    if (m.type === "report_ready") { log("报告就绪"); return; }
+    log("← " + JSON.stringify(m).slice(0, 160));
+  };
+  ws.onclose = () => {
+    $("#wsState").textContent = "已断开";
+    $("#wsState").className = "pill";
+    running = false;
+  };
+};
+
+// ---------------- 录制循环 ----------------
+$("#start").onclick = async () => {
+  const mime = pickMime();
+  if (!mime) { alert("这个浏览器不支持 MediaRecorder"); return; }
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: TARGET_W, height: TARGET_H, facingMode: "user" },
+    audio: false,
+  });
+  $("#cam").srcObject = stream;
+  running = true; t0 = Date.now();
+  $("#start").disabled = true;
+  $("#stop").disabled = false;
+  log(`开始录制 mime=${mime}`);
+  recordOne(mime);
+};
+
+$("#stop").onclick = () => {
+  running = false;
+  clearTimeout(stopTimer); clearInterval(tickTimer);
+  if (recorder && recorder.state !== "inactive") recorder.stop();
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  $("#start").disabled = false;
+  $("#stop").disabled = true;
+  $("#count").textContent = "--";
+  $("#meta").textContent = "已结束";
+  log("结束录制");
+};
+
+async function recordOne(mime) {
+  if (!running) return;
+  chunkIdx++;
+  const parts = [];
+  try {
+    recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: BITRATE });
+  } catch (e) {
+    log("MediaRecorder 创建失败: " + e.message); return;
+  }
+
+  recorder.ondataavailable = e => { if (e.data && e.data.size) parts.push(e.data); };
+  recorder.onstop = async () => {
+    const blob = new Blob(parts, { type: mime.split(";")[0] });
+    await sendChunk(blob);
+    if (running) setTimeout(() => recordOne(mime), 150);  // 立刻开下一段
+  };
+
+  recorder.start();
+  log(`第 ${chunkIdx} 段开始`);
+
+  const started = Date.now();
+  tickTimer = setInterval(() => {
+    const left = Math.max(0, CHUNK_MS - (Date.now() - started));
+    $("#count").textContent = (left / 1000).toFixed(0) + "s";
+    $("#bar").style.width = (100 - left / CHUNK_MS * 100) + "%";
+  }, 200);
+
+  stopTimer = setTimeout(() => {
+    clearInterval(tickTimer);
+    if (recorder.state !== "inactive") recorder.stop();
+  }, CHUNK_MS);
+}
+
+// ---------------- 发送 ----------------
+function toBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(",", 2)[1]);
+    fr.onerror = reject;
+    fr.readAsDataURL(blob);
+  });
+}
+
+async function sendChunk(blob) {
+  const t = Math.round((Date.now() - t0) / 100) / 10;
+  if (blob.size < 10240) { log(`第 ${chunkIdx} 段太小 (${blob.size}B)，跳过`); return; }
+  if (blob.size > MAX_CHUNK_BYTES) log(`⚠ 第 ${chunkIdx} 段 ${(blob.size/1048576).toFixed(1)}MB，超过 5MB 建议降低码率`);
+  if (!ws || ws.readyState !== 1) { log("WS 未连上，本段丢弃"); return; }
+
+  const data = await toBase64(blob);
+  ws.send(JSON.stringify({
+    type: "video_chunk", t, data,
+    ct: blob.type || "video/webm",
+  }));
+  sentCount++;
+  $("#stats").textContent = `切块 ${chunkIdx - (running ? 1 : 0)} · 已发 ${sentCount}`;
+  $("#meta").textContent = `t=${t}s · ${(blob.size / 1048576).toFixed(2)}MB`;
+  log(`→ 发送第 ${chunkIdx} 段 t=${t}s ${(blob.size/1024).toFixed(0)}KB`);
+}
+</script>
+</body>
+</html>

@@ -66,6 +66,10 @@ class FacePhysProvider:
             raise RuntimeError("缺少 TTC_API_KEY_ID / TTC_API_SECRET")
         self.last_raw: dict | None = None
         self.last_latency = 0.0
+        self.last_deducted: Optional[int] = None
+        self.last_rr_reason = ""
+        self.last_rr_detail = ""
+        self.last_liveness: dict = {}
         self.tokens_left: Optional[int] = None
 
     # ---------------------------------------------------------- 签名
@@ -134,19 +138,32 @@ class FacePhysProvider:
     def to_sample(self, data: dict, t: float) -> PhysioSample:
         """把 FacePhys 的返回映射成我们自己的采样结构。
 
-        V3 key 返回分组结构 data.cardiac；老 key 返回扁平 data，两种都兼容。
+        兼容三种返回形态：
+          - V3 分组：data.cardiac.{hr, sqi, hrv}
+          - V2 扁平：data.{hr, confidence, hrv}
+          - 各种字段集（basic 只有 hr+confidence；standard 才有 breathing_rate）
+
+        呼吸率在不同返回里位置不一样，实测会在 data / cardiac / hrv 三个层级出现，
+        所以三个都找一遍 —— 之前在顶层找不到就丢掉，是 bug。
         """
         cardiac = data.get("cardiac") or data
+        hrv = cardiac.get("hrv") or data.get("hrv") or {}
+
         hr = cardiac.get("hr")
         if hr is None:
             hr = data.get("hr")
-        sqi = cardiac.get("sqi")
-        if sqi is None:
-            sqi = data.get("sqi", data.get("confidence"))
+
+        quality = cardiac.get("sqi")
+        if quality is None:
+            quality = data.get("sqi", data.get("confidence"))
 
         rr = data.get("breathing_rate")
         if rr is None:
-            rr = cardiac.get("breathing_rate") or cardiac.get("breathingrate")
+            rr = cardiac.get("breathing_rate")
+        if rr is None:
+            rr = cardiac.get("breathingrate")
+        if rr is None:
+            rr = hrv.get("breathing_rate")
 
         def _f(v):
             try:
@@ -154,18 +171,46 @@ class FacePhysProvider:
             except (TypeError, ValueError):
                 return None
 
-        hr, rr, sqi = _f(hr), _f(rr), _f(sqi)
+        hr, rr, quality = _f(hr), _f(rr), _f(quality)
 
-        if self.tokens_left is None:
-            self.tokens_left = data.get("remaining_tokens")
+        # 换算出 Token 用量（points_* 是历史别名，单位也是 Token）
+        left = data.get("remaining_tokens", data.get("remaining_points"))
+        if left is not None:
+            self.tokens_left = int(left)
+        deducted = data.get("tokens_deducted", data.get("points_deducted"))
+        if deducted is not None:
+            self.last_deducted = int(deducted)
 
-        # 生理合理性闸门：rPPG 会吐离谱值
+        # 指标为什么没出来：**不要猜字段集**，接口自己会说话。
+        # 实测 rr 为空是因为 hr_list 为空 → 没有逐拍间期 → HRV 整条链全灭，
+        # indicators_status 里 22 项全是 not_available。跟 fieldSet 没关系。
+        status = data.get("indicators_status") or {}
+        rr_status = status.get("rr") or {}
+        if rr is None:
+            self.last_rr_reason = rr_status.get("status") or "not_returned"
+            self.last_rr_detail = rr_status.get("reason") or ""
+        else:
+            self.last_rr_reason = ""
+            self.last_rr_detail = ""
+
+        # 活体检测：接口白送的，正好支撑「防代面」叙事
+        live = data.get("liveness") or {}
+        if live:
+            self.last_liveness = {
+                "is_live": live.get("is_live"),
+                "score": live.get("liveness_score"),
+                "status": live.get("status"),
+                "reason": live.get("rejected_reason") or "",
+                "blink_rate": (live.get("signals") or {}).get("blink_rate"),
+            }
+
+        # 生理合理性闸门：rPPG 会吐离谱值；breathing_rate 在缺数据时返回 0，也要挡掉
         if hr is not None and not (40 <= hr <= 180):
-            hr, sqi = None, 0.0
+            hr, quality = None, 0.0
         if rr is not None and not (4 <= rr <= 60):
             rr = None
 
-        quality = max(0.0, min(1.0, sqi or 0.0))
+        quality = max(0.0, min(1.0, quality or 0.0))
         faces = 1 if (hr is not None or quality > 0) else 0
         return PhysioSample(t=t, hr=hr, rr=rr, quality=quality, face_count=faces)
 
