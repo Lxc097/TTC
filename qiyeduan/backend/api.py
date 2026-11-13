@@ -128,8 +128,11 @@ async def room_ws(ws: WebSocket, code: str,
     hub.add(role, ws)
 
     if role == "candidate":
-        # 候选人进房即开一场会话；consent 标记写进会话，报告里会体现
-        STORE.start_session(room, consent=bool(consent))
+        # 候选人进来才算真正开始，并且带上他的授权状态
+        STORE.start_session(room, consent=bool(consent), live=True)
+    else:
+        # 面试官先连也建会话：只有他一个人时，麦克风转写/轮次也要有地方落库
+        STORE.start_session(room, consent=False, live=False)
 
     await ws.send_json({
         "type": "hello_ack",

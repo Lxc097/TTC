@@ -780,5 +780,35 @@ class TestMinutesWithoutCandidate(PipelineCase):
         self.assertEqual(len(self.hub.session.transcript), 1)
 
 
+class TestSessionLifecycle(unittest.TestCase):
+    """会话由先连上的一方创建，且候选人的授权必须能补上。"""
+
+    def _room(self):
+        return STORE.create_room("会话测试", default_questions())
+
+    def test_interviewer_alone_creates_session(self):
+        room = self._room()
+        s = STORE.start_session(room, consent=False, live=False)
+        self.assertIsNotNone(s)
+        self.assertEqual(room.session_id, s.id)
+        self.assertNotEqual(room.status, "live",
+                            "面试官先到不该显示成面试进行中")
+
+    def test_candidate_upgrades_consent_on_existing_session(self):
+        room = self._room()
+        s1 = STORE.start_session(room, consent=False, live=False)
+        s2 = STORE.start_session(room, consent=True, live=True)
+        self.assertIs(s2, s1, "同一条会话，不能重建")
+        self.assertTrue(s2.consent,
+                        "候选人带了授权进来，必须补上，否则视频分析被永久锁死")
+        self.assertEqual(room.status, "live")
+
+    def test_idempotent(self):
+        room = self._room()
+        a = STORE.start_session(room, consent=True, live=True)
+        b = STORE.start_session(room, consent=True, live=True)
+        self.assertIs(a, b)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

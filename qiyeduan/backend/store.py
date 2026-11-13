@@ -93,11 +93,26 @@ class Store:
         return self.rooms.get(code.upper())
 
     # ---------- 会话 ----------
-    def start_session(self, room: Room, consent: bool) -> Session:
-        if room.session_id:
-            existing = self.sessions.get(room.session_id)
-            if existing:
-                return existing
+    def start_session(self, room: Room, consent: bool = False,
+                      live: bool = False) -> Session:
+        """开一场会话。**谁先连上就建** —— 只有面试官也要能记事。
+
+        两个关键细节：
+        1. 已存在的会话会被复用；如果新来的一侧带来了 consent=True
+           （候选人进房），要把旧会话的 consent 补上，否则视频分析会被
+           先连上的面试官创建的 consent=False 永久锁死。
+        2. 只有候选人进房（live=True）才把房间标成 live，避免面试官一进来
+           就显示"面试进行中"。
+        """
+        existing = (self.sessions.get(room.session_id)
+                    if room.session_id else None)
+        if existing is not None:
+            if consent and not existing.consent:
+                existing.consent = True
+            if live:
+                room.status = "live"
+            return existing
+
         s = Session(
             id=uuid.uuid4().hex[:12],
             room_code=room.code,
@@ -107,7 +122,8 @@ class Store:
         )
         self.sessions[s.id] = s
         room.session_id = s.id
-        room.status = "live"
+        if live:
+            room.status = "live"
         return s
 
     def get_session(self, sid: str) -> Optional[Session]:
