@@ -99,6 +99,11 @@ def build_report(session: Session) -> dict:
         },
         "disclaimer": "本报告不包含对候选人的任何评分或排序。",
         "deleted_media": True,   # 视频帧从不落盘，天然为真
+        # 会议纪要：只带角色/文本/时间，附件不带原始音频（本来也不存）
+        "transcript": [
+            {"role": it["role"], "text": it["text"], "t": it["t"]}
+            for it in session.transcript[-120:]
+        ],
     }
     session.report = report
     return report

@@ -607,5 +607,59 @@ class TestStatusFields(PipelineCase):
         self.assertFalse(STORE.list_interviews()[0]["is_live"])
 
 
+class TestTranscript(PipelineCase):
+    """会议纪要：语音转写的存储与广播。"""
+
+    async def test_stt_broadcast_to_both_sides(self):
+        STORE.start_session(self.room, consent=True)
+        await ws_mod.handle_message(
+            self.hub, "interviewer", {"type": "stt", "text": "请先做个自我介绍"})
+
+        self.assertTrue([m for m in self.iws.msgs if m["type"] == "transcript"],
+                        "面试官自己也要收到，纪要面板才完整")
+        self.assertTrue([m for m in self.cws.msgs if m["type"] == "transcript"])
+        self.assertEqual(len(self.hub.session.transcript), 1)
+        self.assertEqual(self.hub.session.transcript[0]["role"], "interviewer")
+
+    async def test_speaker_comes_from_role_not_client(self):
+        """客户端自报 speaker 不可信 —— 否则候选人能把面试官的话标成自己说的。"""
+        STORE.start_session(self.room, consent=True)
+        await ws_mod.handle_message(
+            self.hub, "candidate",
+            {"type": "stt", "text": "我做过三年后端", "speaker": "interviewer"})
+        self.assertEqual(self.hub.session.transcript[0]["role"], "candidate")
+
+    async def test_interim_broadcast_but_not_stored(self):
+        STORE.start_session(self.room, consent=True)
+        await ws_mod.handle_message(
+            self.hub, "candidate", {"type": "stt", "text": "我", "final": False})
+        self.assertEqual(self.hub.session.transcript, [],
+                         "边说边变的中间结果不该进纪要")
+        self.assertTrue([m for m in self.iws.msgs if m["type"] == "transcript"],
+                        "但要让对方实时看到")
+
+    async def test_empty_text_ignored(self):
+        STORE.start_session(self.room, consent=True)
+        await ws_mod.handle_message(
+            self.hub, "candidate", {"type": "stt", "text": "   "})
+        self.assertEqual(self.hub.session.transcript, [])
+        self.assertFalse([m for m in self.iws.msgs if m["type"] == "transcript"])
+
+    async def test_snapshot_restores_transcript(self):
+        STORE.start_session(self.room, consent=True)
+        await ws_mod.handle_message(
+            self.hub, "interviewer", {"type": "stt", "text": "第一句话"})
+        await self.hub.send_snapshot()
+        snap = [m for m in self.iws.msgs if m["type"] == "snapshot"][-1]
+        self.assertEqual(len(snap["transcript"]), 1,
+                         "刷新后纪要要能恢复")
+
+    async def test_transcript_capped(self):
+        session = STORE.start_session(self.room, consent=True)
+        for i in range(520):
+            STORE.add_transcript(session, "candidate", f"第{i}句", float(i))
+        self.assertEqual(len(session.transcript), 500, "上限 500 条，防内存涨爆")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

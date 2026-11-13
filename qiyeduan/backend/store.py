@@ -49,6 +49,9 @@ class Session:
     # "4 次取证里有 2 次没坐实"比只报成功更有说服力。
     confirms_requested: int = 0
     confirms_confirmed: int = 0
+    # 会议纪要时间线：{id, role, text, final, t}
+    # role 是 interviewer / candidate，服务端按连接角色判定，不信客户端自报。
+    transcript: list[dict] = field(default_factory=list)
 
     @property
     def adopt_rate(self) -> float:
@@ -123,6 +126,25 @@ class Store:
                  kind=draft.kind, text=draft.text, why=draft.why, t=t)
         session.hints.append(h)
         return h
+
+    def add_transcript(self, session: Session, role: str, text: str,
+                       t: float, final: bool = True) -> dict:
+        """追加一条转写。只存 final，interim（边说边变的中间结果）只在内存里广播。
+
+        上限 500 条：一场面试几百句足够，防止有人恶意刷导致内存涨爆。
+        """
+        item = {
+            "id": uuid.uuid4().hex[:8],
+            "role": role,
+            "text": (text or "").strip()[:1000],
+            "final": bool(final),
+            "t": round(float(t), 1),
+        }
+        if final and item["text"]:
+            session.transcript.append(item)
+            if len(session.transcript) > 500:
+                del session.transcript[:len(session.transcript) - 500]
+        return item
 
     def set_feedback(self, hint_id: str, action: str) -> Optional[Hint]:
         for s in self.sessions.values():

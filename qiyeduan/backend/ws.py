@@ -261,6 +261,22 @@ class RoomHub:
             await self._emit_sample(sample, t)
             await self._apply_confirmation(sample, t)
 
+    # ---------------- 会议纪要（语音转写） ----------------
+    async def on_stt(self, role: str, text: str, t: float,
+                     final: bool = True) -> None:
+        """收一条转写，存进时间线并广播给两端。
+
+        发言人由**服务端按连接角色**判定，不信客户端自报的 speaker 字段 ——
+        否则候选人可以把面试官的话标成自己说的。
+        """
+        session = self.session
+        if session is None:
+            return
+        item = STORE.add_transcript(session, role, text, t, final)
+        if not item["text"]:
+            return
+        await self.broadcast({"type": "transcript", **item})
+
     # ---------------- 轮次处理 ----------------
     async def on_turn_start(self, t: float) -> None:
         session = self.session
@@ -500,6 +516,8 @@ class RoomHub:
             "candidate_online": bool(self.conns.get("candidate")),
             "interviewer_online": bool(self.conns.get("interviewer")),
             "turns": len(session.turns) if session else 0,
+            # 重连时把纪要也补回来，否则刷新一下前面的对话全没了
+            "transcript": (session.transcript[-80:] if session else []),
             "hints": [
                 {"id": h.id, "turn_id": h.turn_id, "kind": h.kind,
                  "text": h.text, "why": h.why, "t": round(h.t, 2),
@@ -564,6 +582,10 @@ async def handle_message(hub: RoomHub, role: str, msg: dict) -> None:
                     "action": action,
                     "adopt_rate": round(session.adopt_rate, 3) if session else 0,
                 })
+
+    elif mtype == "stt":
+        await hub.on_stt(role, msg.get("text", ""), t,
+                         bool(msg.get("final", True)))
 
     elif mtype == "end":
         # 只有面试官能结束整场，候选人最多退出连接

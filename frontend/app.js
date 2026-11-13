@@ -451,6 +451,30 @@ function showCandidateLive(scene, roomId, audioOnly) {
   }
   connect();
 
+  // 候选人侧也开语音转写：每台设备只负责标"自己说的话"。
+  // 两端都开才不会漏掉对方的声音（各自麦克风有回声消除，抓的主要是本机说话人）。
+  (function setupCandidateStt() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+    const rec = new SR();
+    rec.lang = 'zh-CN';
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onresult = ev => {
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const txt = (((ev.results[i][0] || {}).transcript) || '').trim();
+        if (txt && ws && ws.readyState === 1 && !ended) {
+          ws.send(JSON.stringify({ type: 'stt', text: txt,
+                                   final: ev.results[i].isFinal }));
+        }
+      }
+    };
+    rec.onend = () => {
+      if (!ended && ws && ws.readyState === 1) { try { rec.start(); } catch (e) {} }
+    };
+    try { rec.start(); } catch (e) {}
+  })();
+
   const send = o => { if (ws && ws.readyState === 1 && !ended) ws.send(JSON.stringify(o)); };
 
   // 演示用的脚本轮次。
@@ -644,7 +668,14 @@ routes['/interviewer/room/:id'] = {
       '<div class="stack">' +
       '<div class="stage" id="intStage"><div class="vid-fill"><div><div class="avatar">李</div><div class="place-name">候选人 · 李想</div></div></div>' +
       '<div class="status-float"><span class="pulse"></span><span id="intStatus">等待候选人进入…</span></div></div>' +
-      '<div class="caption-bar"><span class="who">实时字幕</span><span id="intCap">等待候选人进入…</span></div>' +
+      '<div class="minutes" id="minutesCard">' +
+      '<div class="minutes-head"><b>面试纪要</b><span class="tiny muted" id="sttState">麦克风未开启</span>' +
+      '<button class="btn btn-sm btn-ghost" id="sttBtn">开启语音转写</button></div>' +
+      '<div class="minutes-body" id="minutesBody"><p class="tiny muted" style="padding:10px 2px;">对话会实时出现在这里。开启语音转写，或在下面手打。</p></div>' +
+      '<div class="row" style="gap:8px;margin-top:8px;">' +
+      '<input id="trInput" placeholder="手打一句，回车发送" style="flex:1;padding:8px 11px;border:1px solid var(--line);border-radius:9px;font:inherit;" />' +
+      '<button class="btn btn-sm btn-primary" id="trSend">发送</button></div>' +
+      '</div>' +
       '<p class="tiny muted">隐私提示：本场信号与提示卡仅同步给当场面官本人，不写入候选人可见画面。</p>' +
       '</div>' +
       '<div class="stack">' +
@@ -660,9 +691,9 @@ routes['/interviewer/room/:id'] = {
     const state = { code: p.id, sec: 0, capi: 0, adopt: 0, ignore: 0, cues: [], ws: null, ended: false, hasSignal: false };
     window.__corgiJob = '前端工程师';
     every(() => { state.sec++; $('#timer').textContent = fmtTs(state.sec); }, 1000);
-    every(() => { $('#intCap').textContent = CANDIDATE_LINES[state.capi % CANDIDATE_LINES.length]; state.capi++; }, 5000);
     every(() => { if (!state.hasSignal) demoTaint(); }, 2600);
     connectInterviewer(state);
+    setupMinutes(state);
     $('#copyLinkBtn').addEventListener('click', () => {
       const url = location.origin + location.pathname + '#/candidate/room/' + state.code;
       if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(() => toast('链接已复制'), () => toast('复制失败'));
@@ -732,8 +763,19 @@ function handleIntMsg(state, m) {
     state.cues = (m.hints || []).map(h => cueItem(h));
     state.adopt = (m.hints || []).filter(h => h.action === 'used').length;
     state.ignore = (m.hints || []).filter(h => h.action === 'ignored').length;
+    state.tr = (m.transcript || []).slice();
     syncChips(state);
     renderCues(state);
+    renderTranscript(state);
+  }
+  else if (m.type === 'transcript') {
+    if (m.final) {
+      state.tr.push(m);
+      delete state.trInterim[m.role];
+    } else {
+      state.trInterim[m.role] = m.text;
+    }
+    renderTranscript(state);
   }
   else if (m.type === 'peer') {
     const st = $('#intStatus');
@@ -832,6 +874,93 @@ function showConfirm(state, text) {
   if (!el) { el = document.createElement('div'); el.id = 'confirmLine'; el.className = 'tiny muted'; el.style.margin = '10px 2px 0'; wrap.prepend(el); }
   el.textContent = text;
   if (text === '未证实') el.style.color = 'var(--ink-3)';
+}
+
+/* ---------- 面试纪要（语音转写） ---------- */
+function trRow(it, interim) {
+  const isQ = it.role === 'interviewer';
+  const who = isQ ? '面试官' : '候选人';
+  return '<div class="tr-row ' + (isQ ? 'tr-q' : 'tr-a') + (interim ? ' tr-interim' : '') + '">' +
+    '<div class="tr-meta"><span class="tr-who">' + who + '</span>' +
+    (interim ? '<span class="tr-t">识别中…</span>'
+             : '<span class="tr-t">' + fmtTs(it.t || 0) + '</span>') +
+    '</div><div class="tr-text">' + esc(it.text) + '</div></div>';
+}
+function renderTranscript(state) {
+  const box = $('#minutesBody');
+  if (!box) return;
+  const items = (state.tr || []).slice(-200);
+  const interim = Object.keys(state.trInterim || {})
+    .filter(r => state.trInterim[r])
+    .map(r => trRow({ role: r, text: state.trInterim[r], t: state.sec }, true));
+  if (!items.length && !interim.length) {
+    box.innerHTML = '<p class="tiny muted" style="padding:10px 2px;">对话会实时出现在这里。开启语音转写，或在下面手打。</p>';
+    return;
+  }
+  box.innerHTML = items.map(x => trRow(x, false)).join('') + interim.join('');
+  box.scrollTop = box.scrollHeight;
+}
+function sendStt(state, text, final) {
+  if (!text) return;
+  if (state.ws && state.ws.readyState === 1) {
+    state.ws.send(JSON.stringify({ type: 'stt', text: text, final: !!final }));
+  } else {
+    toast('未连接后端，这句话没发出去');
+  }
+}
+function setupMinutes(state) {
+  state.tr = state.tr || [];
+  state.trInterim = state.trInterim || {};
+  const label = $('#sttState'), btn = $('#sttBtn'), input = $('#trInput');
+  renderTranscript(state);
+
+  const manual = () => {
+    const v = (input.value || '').trim();
+    if (!v) return;
+    sendStt(state, v, true);
+    input.value = '';
+  };
+  $('#trSend').addEventListener('click', manual);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); manual(); }
+  });
+
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    label.textContent = '此浏览器不支持语音识别，用下方手打';
+    btn.disabled = true;
+    return;
+  }
+  let rec = null, on = false;
+  btn.addEventListener('click', () => {
+    if (on) {
+      on = false;
+      try { rec && rec.stop(); } catch (e) {}
+      btn.textContent = '开启语音转写';
+      label.textContent = '已关闭';
+      return;
+    }
+    rec = new SR();
+    rec.lang = 'zh-CN';
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onresult = ev => {
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const txt = (((ev.results[i][0] || {}).transcript) || '').trim();
+        if (txt) sendStt(state, txt, ev.results[i].isFinal);
+      }
+    };
+    rec.onerror = e => { label.textContent = '识别出错：' + (e.error || 'unknown'); };
+    rec.onend = () => { if (on) { try { rec.start(); } catch (e) {} } };
+    try {
+      rec.start();
+      on = true;
+      btn.textContent = '关闭语音转写';
+      label.textContent = '转写中…';
+    } catch (e) {
+      label.textContent = '启动失败：' + (e.message || e);
+    }
+  });
 }
 
 /* ---------- analysis ---------- */

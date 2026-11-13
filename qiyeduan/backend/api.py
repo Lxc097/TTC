@@ -87,6 +87,16 @@ def get_report(sid: str, role: str = Query("interviewer")) -> dict:
     return session.report or report_mod.build_report(session)
 
 
+@router.get("/api/sessions/{sid}/transcript")
+def get_transcript(sid: str, limit: int = Query(200, ge=1, le=500)) -> dict:
+    """会议纪要（语音转写）。报告页和纪要面板都用它。"""
+    session = STORE.get_session(sid)
+    if not session:
+        raise HTTPException(404, "会话不存在")
+    return {"session_id": sid, "total": len(session.transcript),
+            "items": session.transcript[-limit:]}
+
+
 @router.post("/api/hints/{hint_id}/feedback")
 def hint_feedback(hint_id: str, payload: dict = Body(default={})) -> dict:
     """REST 兜底：前端 WS 断了也能点「用掉 / 忽略」。"""

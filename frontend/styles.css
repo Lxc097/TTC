@@ -402,3 +402,17 @@ p { margin: 0; }
 .cue-kind { font-size: 12px; font-weight: 700; color: var(--orange-strong); background: var(--peach); border-radius: 999px; padding: 2px 8px; }
 .chip.green { background: var(--green-soft); color: var(--green); }
 .cue-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+/* ---------- 面试纪要（语音转写） ---------- */
+.minutes { background:#fff; border:1px solid #e6e1d8; border-radius:14px; padding:12px 14px; margin-top:12px; }
+.minutes-head { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+.minutes-head b { font-size:15px; }
+.minutes-head .tiny { margin-right:auto; }
+.minutes-body { max-height:260px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; padding-right:4px; }
+.tr-row { border-radius:10px; padding:8px 11px; max-width:92%; }
+.tr-q { background:#f2eee7; align-self:flex-start; }
+.tr-a { background:#e7f3ef; align-self:flex-end; }
+.tr-interim { opacity:.55; }
+.tr-meta { display:flex; gap:8px; align-items:center; font-size:11px; color:#8a8279; margin-bottom:2px; }
+.tr-who { font-weight:600; }
+.tr-text { font-size:14px; line-height:1.55; white-space:pre-wrap; word-break:break-word; }
