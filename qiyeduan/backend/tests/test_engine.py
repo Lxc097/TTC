@@ -23,7 +23,8 @@ os.environ["BASELINE_MIN_SAMPLES"] = "5"
 import config          # noqa: E402
 import engine          # noqa: E402
 from engine import (   # noqa: E402
-    Baseline, Behavior, PhysioSample, Turn, judge_turn, robust_z, summarize_turn,
+    Baseline, Behavior, PhysioSample, Turn, evaluate_trigger, judge_turn,
+    robust_z, summarize_turn,
 )
 
 
@@ -154,6 +155,33 @@ class TestHintPolicy(unittest.TestCase):
         hint = judge_turn(turn, ready_baseline(), prev_turns=[prev])
         self.assertIsNotNone(hint)
         self.assertEqual(hint.kind, "wrap", "连续高负荷时应该叫停而不是继续追")
+
+
+class TestTriggerCalibration(unittest.TestCase):
+    """阈值标定。0.6*max+0.4*mean 会稀释单通道强信号，阈值必须按实测定。"""
+
+    def test_demo_pause_07_triggers(self):
+        """停顿 0.7 + 其余 0.2/0.1/0.1 = 0.53。
+
+        这是"只有一个通道明显异常"的最典型情况，阈值 0.55 会漏，所以定在 0.5。
+        前端的演示轮次用的就是这组数。
+        """
+        beh = Behavior(pause_ratio=0.7, filler_density=0.2,
+                       speech_rate_drop=0.1, gaze_off=0.1)
+        self.assertAlmostEqual(beh.anomaly(), 0.53, places=2)
+        self.assertGreaterEqual(beh.anomaly(), config.TRIGGER_THRESHOLD)
+        self.assertTrue(evaluate_trigger(beh).fired)
+
+    def test_mild_turn_stays_quiet(self):
+        beh = Behavior(pause_ratio=0.3, filler_density=0.2,
+                       speech_rate_drop=0.1, gaze_off=0.1)
+        self.assertFalse(evaluate_trigger(beh).fired,
+                         "普通轮次不能触发，否则一次演示就把额度花光")
+
+    def test_single_strong_channel_hard_triggers(self):
+        beh = Behavior(pause_ratio=config.TRIGGER_STRONG + 0.05)
+        self.assertTrue(evaluate_trigger(beh).fired,
+                        "单通道超过硬触发线直接报警，不看综合分")
 
 
 class TestSummarize(unittest.TestCase):

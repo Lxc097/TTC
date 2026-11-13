@@ -97,8 +97,10 @@ HINT_COOLDOWN = _f("HINT_COOLDOWN", 30.0)        # 两条提示最小间隔（�
 # ---------- 触发 / 确认（行为触发、生理确认）----------
 # 行为信号免费（STT 就能拿到），生理信号一个片段 17 万 token。
 # 所以不持续采样，只在行为信号报警时花一次钱去确认。
-TRIGGER_THRESHOLD = _f("TRIGGER_THRESHOLD", 0.55)  # 行为异常分达到就请求确认
-TRIGGER_STRONG = _f("TRIGGER_STRONG", 0.75)        # 单通道达到这个值直接硬触发
+TRIGGER_THRESHOLD = _f("TRIGGER_THRESHOLD", 0.5)   # 行为异常分达到就请求确认
+TRIGGER_STRONG = _f("TRIGGER_STRONG", 0.7)         # 单通道达到这个值直接硬触发
+# 标定依据（实测）：停顿 0.7 + 其余 0.2/0.1/0.1 时，0.6*max+0.4*mean = 0.53。
+# 阈值取 0.55 会漏掉这种"只有一个通道明显异常"的典型情况，所以定在 0.5。
 CONFIRM_MAX = _i("CONFIRM_MAX", 5)                 # 每场最多请求几段确认视频（省钱闸门）
 CONFIRM_CLIP_SECONDS = _i("CONFIRM_CLIP_SECONDS", 20)  # 每次请求录多长（必须 >=15）
 PENDING_TIMEOUT = _f("PENDING_TIMEOUT", 90.0)      # 请求后多久没回来就作废

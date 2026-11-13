@@ -443,10 +443,24 @@ function showCandidateLive(scene, roomId, audioOnly) {
   connect();
 
   const send = o => { if (ws && ws.readyState === 1 && !ended) ws.send(JSON.stringify(o)); };
-  later(() => send({ type: 'turn_start', t: 15, turn_id: 1 }), 15000);
-  later(() => send({ type: 'turn_end', t: 40, turn_id: 1, transcript: '我先做个自我介绍，主要做前端。', beh: { pause_ratio: 0.3, filler_density: 0.2, speech_rate_drop: 0.1, gaze_off: 0.1 } }), 40000);
-  later(() => send({ type: 'turn_start', t: 70, turn_id: 2 }), 70000);
-  later(() => send({ type: 'turn_end', t: 95, turn_id: 2, transcript: '这个项目的难点主要性能，我们从八百压到一万二。', beh: { pause_ratio: 0.8, filler_density: 0.25, speech_rate_drop: 0.15, gaze_off: 0.1 } }), 95000);
+
+  // 演示用的脚本轮次。
+  // 第 2 轮 pause_ratio=0.8 会真的触发一次取证 —— 在 VISION_PROVIDER=facephys 下
+  // 那就是一次真实的 FacePhys 调用（约 17.5 万 token），演示三次额度就见底。
+  // 所以默认只在 mock 模式下跑；真机演示想手动打开就加 ?scripted=1。
+  const runScriptedTurns = () => {
+    later(() => send({ type: 'turn_start', t: 15, turn_id: 1 }), 15000);
+    later(() => send({ type: 'turn_end', t: 40, turn_id: 1, transcript: '我先做个自我介绍，主要做前端。', beh: { pause_ratio: 0.3, filler_density: 0.2, speech_rate_drop: 0.1, gaze_off: 0.1 } }), 40000);
+    later(() => send({ type: 'turn_start', t: 70, turn_id: 2 }), 70000);
+    later(() => send({ type: 'turn_end', t: 95, turn_id: 2, transcript: '这个项目的难点主要性能，我们从八百压到一万二。', beh: { pause_ratio: 0.8, filler_density: 0.25, speech_rate_drop: 0.15, gaze_off: 0.1 } }), 95000);
+  };
+  apiMaybe('/api/config').then(cfg => {
+    const mock = !cfg || cfg.vision_provider === 'mock';
+    const forced = /[?&]scripted=1/.test(location.search);
+    if (mock || forced) { runScriptedTurns(); return; }
+    const t = $('#statusTxt');
+    if (t) t.textContent = '真实模式：轮次由真实对话驱动，未启用演示脚本';
+  });
 
   $('#muteBtn').addEventListener('click', () => {
     muted = !muted;
@@ -856,6 +870,7 @@ function mapReport(j, mode) {
     conclusion: j.summary || (mode === 'candidate' ? '本场未发现明显需要追问的点，信号平稳。' : ''),
     points: (j.points || []).map(pt => ({ t: pt.clock || fmtClock(pt.t || 0), line: pt.text || '', ev: pt.why || pt.label || '' })),
     adoptRate: hs.adopt_rate != null ? hs.adopt_rate : 0,
+    verification: j.verification || null,
     duration: fmtTs(j.duration || 0),
     title: j.title || (mode === 'candidate' ? '这份面试报告' : '面试质量报告'),
     date: '',
@@ -876,12 +891,23 @@ function drawReport(p, mode, d) {
   const delNote = d.deleted
     ? '<span class="chip red">' + I.x + ' 已删除 · 数据将在 7 天后清除</span>'
     : '<span class="chip gray">删除状态：未删除</span>';
+  // 取证诚实度：申请了几次、坐实了几次。"没坐实"也要显示出来，
+  // 一个敢说"这条没证实"的系统比永远给结论的系统可信。
+  const ver = d.verification && d.verification.requested
+    ? '<div class="row mt-12" style="gap:8px;"><span class="chip gray">取证 ' +
+      d.verification.requested + ' 次</span>' +
+      '<span class="chip green">坐实 ' + d.verification.confirmed + ' 次</span>' +
+      (d.verification.unconfirmed
+        ? '<span class="chip gray">未证实 ' + d.verification.unconfirmed + ' 次</span>'
+        : '') + '</div>'
+    : '';
   $('#repBody').innerHTML =
     '<div class="conclusion">一句话结论<br><span style="font-weight:400;font-size:17px;">' + esc(conclusion) + '</span></div>' +
     '<div class="grid-3 mt-16">' +
     '<div class="stat-box"><div class="num">' + (d.points || []).length + '</div><div class="lab">追问点</div></div>' +
     '<div class="stat-box"><div class="num">' + Math.round((d.adoptRate || 0) * 100) + '%</div><div class="lab">提示采纳率</div></div>' +
     '<div class="stat-box"><div class="num">' + (d.duration || '--') + '</div><div class="lab">面试时长</div></div></div>' +
+    ver +
     '<div class="stack mt-16">' + (points || anaEmpty) + '</div>' +
     '<div class="card card-pad mt-16" id="replayCard" style="display:none;"><div class="row-between"><b>回看 20 秒</b><span class="tiny muted" id="replayT"></span></div>' +
     '<div class="replay mt-12"><div class="r-track"><i id="replayBar"></i></div><div class="tiny muted" style="margin-top:8px;">模拟回放该时间点前后 20 秒的问答。</div></div></div>' +

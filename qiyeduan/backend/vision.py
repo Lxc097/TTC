@@ -85,6 +85,16 @@ class MockProvider:
                        t: float) -> Optional[PhysioSample]:
         return self.sample(frames[-1] if frames else None, t)
 
+    def sample_video(self, video: bytes, t: float,
+                     content_type: str = "video/webm") -> Optional[PhysioSample]:
+        """mock 的视频形态：把整段视频当成一帧处理，走同一个可排练的心率模型。
+
+        没有这个方法的话，mock 模式下前端发 video_chunk 会 AttributeError，
+        面试官端直接降级成黄条 —— 演示当场就废。之前它被一次整目录覆盖弄丢过，
+        现在由 tests/test_pipeline.py 的 mock 视频用例钉住。
+        """
+        return self.sample(video or b"mock-video", t)
+
 
 def get_provider() -> VisionProvider:
     """按环境变量选择实现。整个后端只在这里 new 一次。

@@ -496,6 +496,9 @@ class RoomHub:
             "session_id": self.room.session_id,
             "status": self.room.status,
             "baseline_ready": self.room.baseline.ready,
+            # 重连时页面要知道对端还在不在，光有 status 不够
+            "candidate_online": bool(self.conns.get("candidate")),
+            "interviewer_online": bool(self.conns.get("interviewer")),
             "turns": len(session.turns) if session else 0,
             "hints": [
                 {"id": h.id, "turn_id": h.turn_id, "kind": h.kind,

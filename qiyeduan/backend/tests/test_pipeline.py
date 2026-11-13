@@ -563,5 +563,49 @@ class TestLlmSemanticChannel(PipelineCase):
                               if m["type"] == "record_request"]), 1)
 
 
+class TestMockVideoPath(PipelineCase):
+    """mock 模式下前端发 video_chunk 必须跑通。
+
+    这条是为了防止 MockProvider.sample_video 再次被弄丢：
+    丢了的话后端会抛 AttributeError → 面试官端直接降级黄条，演示当场废。
+    """
+
+    async def test_mock_provider_has_sample_video(self):
+        import vision
+        p = vision.MockProvider()
+        self.assertTrue(hasattr(p, "sample_video"),
+                        "MockProvider 缺 sample_video，mock 下 video_chunk 会炸")
+        s = p.sample_video(b"x" * 5000, 30.0)
+        self.assertIsNotNone(s)
+        self.assertIsNotNone(s.hr)
+
+    async def test_video_chunk_in_mock_mode_emits_signal(self):
+        import vision
+        ws_mod.PROVIDER = vision.MockProvider()
+        STORE.start_session(self.room, consent=True)
+        await self.hub.on_video_chunk(
+            base64.b64encode(b"x" * 5000).decode(), 30.0)
+        self.assertIn("signal", self.iws.types())
+        self.assertEqual([m for m in self.iws.msgs if m["type"] == "status"],
+                         [], "mock 模式下发 video_chunk 不该降级")
+
+
+class TestStatusFields(PipelineCase):
+    """前端提的两个字段缺口。"""
+
+    async def test_snapshot_has_online_flags(self):
+        STORE.start_session(self.room, consent=True)
+        await self.hub.send_snapshot()
+        snap = [m for m in self.iws.msgs if m["type"] == "snapshot"][-1]
+        self.assertTrue(snap["candidate_online"])
+        self.assertTrue(snap["interviewer_online"])
+
+    async def test_interviews_has_is_live(self):
+        STORE.start_session(self.room, consent=True)
+        self.assertTrue(STORE.list_interviews()[0]["is_live"])
+        await self.hub.on_end()
+        self.assertFalse(STORE.list_interviews()[0]["is_live"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

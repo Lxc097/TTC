@@ -152,7 +152,10 @@ class Store:
                 "session_id": s.id,
                 "job_title": s.job_title,
                 "started_at": s.started_at,
+                # 秒数（浮点）。没结束的场次按"到现在为止"算，所以带个 is_live
+                # 让前端能区分"已结束的时长"和"还在进行中"。
                 "duration": (s.ended_at or time.time()) - s.started_at,
+                "is_live": s.ended_at is None,
                 "turns": len(s.turns),
                 "points": len(s.hints),
                 "adopt_rate": round(s.adopt_rate, 3),
