@@ -32,7 +32,7 @@ uvicorn main:app --reload --port 8000
 ### 验证
 
 ```bash
-python -m unittest discover -s tests -v   # 34 个（18 引擎 + 6 管道 + 10 解析）
+python -m unittest discover -s tests -v   # 49 个（18 引擎 + 6 管道 + 10 解析 + 15 配置）
 python tests/smoke_flow.py                # 端到端全链路，不需要 fastapi
 python tools/probe_vision_api.py --self-test   # 真实 API 适配层自检
 ```
@@ -136,6 +136,19 @@ worker 泄漏、候选人未授权却仍在分析。`test_vision_http.py` 盯厂
 **B 形态有一个陷阱，不知道会通宵**：rPPG 需要连续帧，而我们的背压为了控制延迟只保留最新一帧。
 如果照搬，每 2 秒才喂一帧，视频被打散，心率永远算不对。
 所以 segment 模式下帧缓冲放在**落帧那一侧**（`ws.py` 的 `seg_buffer`），不是一个可选项。
+
+### 第 0.5 步：密钥放 `.env`，永远不要放代码
+
+```bash
+copy .env.example .env      # 然后填 VISION_API_URL / VISION_API_KEY
+```
+
+`.env` 已被 `.gitignore` 排除，由 `config.py` 里的 20 行解析器自动加载（不引入
+python-dotenv 依赖），且**真实环境变量优先**——现场用 `set` 临时覆盖依然生效。
+
+> ⚠️ 不要把密钥写进代码、README、测试、commit message，也不要贴进任何会被记录的地方。
+> 仓库只要有一个人 `git add .`，密钥就跟着历史记录永久留在那里了（删掉文件也没用，
+> 要 `git filter-repo` 重写历史 + 立刻去平台轮换）。
 
 ### 第 1 步：先跑探针，别急着写代码
 

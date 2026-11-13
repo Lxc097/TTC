@@ -68,6 +68,25 @@ def start_mock_server() -> tuple[HTTPServer, str]:
     return server, url
 
 
+def _mask(v: str) -> str:
+    """打印请求时把凭据遮掉，别把 secret 打到日志里。"""
+    if len(v) <= 8:
+        return "***"
+    return v[:4] + "***" + v[-2:]
+
+
+def mask_headers(headers: dict) -> dict:
+    sensitive = ("authorization", "x-api-key", "api-key", "secret",
+                 "token", "signature")
+    out = {}
+    for k, v in headers.items():
+        if any(s in k.lower() for s in sensitive):
+            out[k] = _mask(str(v))
+        else:
+            out[k] = v
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--self-test", action="store_true",
@@ -77,7 +96,20 @@ def main() -> int:
     ap.add_argument("--image", default="", help="一张含人脸的 jpg/png")
     ap.add_argument("--times", type=int, default=3)
     ap.add_argument("--mode", default=os.getenv("VISION_API_MODE", "frame"))
+    ap.add_argument("--header", action="append", default=[],
+                    metavar="'Name: value'",
+                    help="额外请求头，可重复。用于对接任意厂商的鉴权方式")
+    ap.add_argument("--body", default="",
+                    help="自定义 JSON 请求体，{b64} 会被替换成图片 base64")
     args = ap.parse_args()
+
+    extra_headers: dict = {}
+    for raw in args.header:
+        if ":" not in raw:
+            print(f"请求头格式应为 'Name: value'，收到：{raw}")
+            return 2
+        k, v = raw.split(":", 1)
+        extra_headers[k.strip()] = v.strip()
 
     server = None
     url = args.url
@@ -102,9 +134,14 @@ def main() -> int:
         print("[输入] 未指定 --image，使用占位字节（真实 API 会返回无脸，属正常）")
 
     os.environ["VISION_API_MODE"] = args.mode
-    provider = HttpVisionProvider(url=url, key=args.key)
+    provider = HttpVisionProvider(url=url, key=args.key,
+                                  extra_headers=extra_headers,
+                                  body_template=args.body)
     print(f"[配置] mode={provider.mode} payload={provider.payload_kind} "
           f"timeout={provider.timeout}s")
+    print(f"[请求头] {mask_headers(provider._headers())}")
+    if args.body:
+        print(f"[请求体] {args.body[:160]}")
 
     latencies: list[float] = []
     print(f"\n[请求] 连打 {args.times} 次 …")

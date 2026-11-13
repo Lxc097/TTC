@@ -111,11 +111,19 @@ class HttpVisionProvider:
 
     wants_segment = False
 
-    def __init__(self, url: str = "", key: str = "") -> None:
+    def __init__(self, url: str = "", key: str = "",
+                 extra_headers: Optional[dict] = None,
+                 body_template: str = "") -> None:
         self.url = url or _env("VISION_API_URL")
         self.key = key or _env("VISION_API_KEY")
         if not self.url:
             raise RuntimeError("VISION_API_URL 未配置（或改用 VISION_PROVIDER=mock）")
+
+        # 用来对接任意厂商：额外的请求头 / 自定义请求体
+        self.extra_headers = dict(extra_headers or {})
+        self.body_template = body_template or ""
+        if not self.body_template:
+            self.body_template = _env("VISION_BODY_TEMPLATE")
 
         self.mode = _env("VISION_API_MODE", "frame").lower()
         self.wants_segment = self.mode == "segment"
@@ -151,9 +159,14 @@ class HttpVisionProvider:
              else "application/octet-stream"}
         if self.key:
             h[self.auth_header] = f"{self.auth_prefix}{self.key}"
+        h.update(self.extra_headers)      # 自定义头优先，便于对接任意厂商
         return h
 
     def _body(self, frames: list[bytes]) -> bytes:
+        if self.body_template:
+            # 自定义请求体：{b64} 会被替换成最后一帧的 base64
+            b64 = base64.b64encode(frames[-1]).decode() if frames else ""
+            return self.body_template.replace("{b64}", b64).encode()
         if self.payload_kind == "raw":
             # 部分厂商直接收二进制流（单帧）
             return frames[-1] if frames else b""

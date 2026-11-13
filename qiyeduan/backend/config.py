@@ -2,6 +2,49 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+
+def _parse_dotenv(text: str) -> dict[str, str]:
+    """纯函数：.env 文本 → dict。不碰文件系统，方便单测。
+
+    规则：
+    - 忽略空行与 # 注释
+    - KEY=VALUE，等号两边空格无所谓
+    - 值被引号包裹时去掉引号，但**保留引号内的尾部空格**
+      （VISION_AUTH_PREFIX="Bearer " 依赖这一点，否则鉴权头会拼成 Bearerxxx）
+    """
+    out: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        key = k.strip()
+        if not key:
+            continue
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        out[key] = v
+    return out
+
+
+def _load_dotenv(path: Path) -> None:
+    """极简 .env 加载，不引入 python-dotenv 依赖。
+
+    **真实环境变量优先**（set 过的不会被 .env 覆盖），
+    这样 demo 现场用 set VISION_PROVIDER=mock 临时切换不会失效。
+
+    密钥只放 .env，.env 已被 .gitignore 排除 —— 永远不要让密钥进仓库。
+    """
+    if not path.exists():
+        return
+    for k, v in _parse_dotenv(path.read_text(encoding="utf-8")).items():
+        os.environ.setdefault(k, v)
+
+
+_load_dotenv(Path(__file__).with_name(".env"))
 
 
 def _f(name: str, default: float) -> float:
