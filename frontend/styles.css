@@ -62,6 +62,9 @@ p { margin: 0; }
 /* ---------- layout ---------- */
 .shell { min-height: 100vh; display: flex; flex-direction: column; }
 .wrap { width: 100%; max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+/* 面试间需要更宽的主区：视频居中放大，右侧保留信号/提示栏 */
+.wrap.page-wide { max-width: 1800px; padding-left: 24px; padding-right: 24px; }
+.room-wide .nav-in { max-width: 1800px; }
 .page { flex: 1; padding: 40px 0 72px; }
 .page-narrow { max-width: 760px; margin: 0 auto; }
 
@@ -241,6 +244,25 @@ p { margin: 0; }
 .ctl .lab { font-size: 11px; margin-top: 2px; }
 .ctl-col { display: flex; flex-direction: column; align-items: center; gap: 4px; }
 
+/* ---------- interviewer room: big centered candidate feed ---------- */
+.interview-shell { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; align-items: start; }
+.interview-main { width: 100%; max-width: none; margin-inline: auto; }
+.stage-xl { width: 100%; }
+.peer-video {
+  position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%;
+  object-fit: cover; background: #101010; display: none;
+}
+.peer-video.on { display: block; }
+.stage-chip {
+  position: absolute; right: 14px; bottom: 14px; z-index: 3;
+  background: rgba(0,0,0,.55); color: #fff; font-size: 12px; font-weight: 600;
+  border-radius: var(--r-pill); padding: 6px 12px;
+}
+.stage-hint { color: #9b9b9b; font-size: 12px; text-align: center; margin-top: 10px; }
+.interview-side { display: flex; flex-direction: column; gap: 16px; }
+.interview-side .minutes { margin-top: 0; }
+.interview-side .minutes-body { max-height: 300px; }
+
 /* ---------- captions ---------- */
 .caption-bar {
   min-height: 72px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-lg);
@@ -349,6 +371,31 @@ p { margin: 0; }
 .footer .row-between { align-items: flex-start; }
 
 /* ---------- responsive ---------- */
+@media (max-width: 960px) {
+  .interview-shell { grid-template-columns: 1fr; }
+  .interview-main { max-width: none; }
+}
+
+/* ---------- 单屏面试间：不出现页面级滚动 ---------- */
+body.room-wide { height: 100vh; overflow: hidden; }
+body.room-wide .shell { height: 100vh; min-height: 0; }
+body.room-wide #app { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+body.room-wide .page { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 24px 14px; }
+body.room-wide .footer { display: none; }
+body.room-wide .room-head { align-items: flex-start; margin-bottom: 8px; }
+body.room-wide .room-title { font-size: 20px; margin: 0; }
+body.room-wide .room-sub { margin-top: 2px; font-size: 13px; }
+body.room-wide .join-line { margin-top: 3px; font-size: 11px; }
+body.room-wide .join-line code { display: inline-block; max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+body.room-wide .interview-shell { flex: 1; min-height: 0; align-items: stretch; }
+body.room-wide .interview-main { min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+body.room-wide .stage-xl { flex: 1; min-height: 0; aspect-ratio: auto; }
+body.room-wide .interview-main > .tiny { margin: 0; }
+body.room-wide .interview-side { min-height: 0; height: 100%; overflow-y: auto; padding-right: 4px; }
+@media (max-width: 900px) {
+  body.room-wide { height: auto; overflow: visible; }
+  body.room-wide .shell { height: auto; }
+}
 @media (max-width: 760px) {
   .nav-links { display: none; }
   .grid-2, .grid-3, .check-row { grid-template-columns: 1fr; }
@@ -416,3 +463,134 @@ p { margin: 0; }
 .tr-meta { display:flex; gap:8px; align-items:center; font-size:11px; color:#8a8279; margin-bottom:2px; }
 .tr-who { font-weight:600; }
 .tr-text { font-size:14px; line-height:1.55; white-space:pre-wrap; word-break:break-word; }
+
+/* =========================================================
+   手机适配 · 只追加覆盖，不改动上方桌面规则
+   ========================================================= */
+:root { --nav-h: 64px; --safe-b: env(safe-area-inset-bottom, 0px); }
+html { -webkit-text-size-adjust: 100%; }
+body { min-height: 100dvh; }
+
+@media (hover: none) and (pointer: coarse) {
+  button, .btn, a, .list-row, .cue { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+}
+
+/* ---------- 手机通用（竖屏 ≤760） ---------- */
+@media (max-width: 760px) {
+  :root { --nav-h: 56px; }
+
+  .nav-in { height: var(--nav-h); gap: 12px; }
+  .brand { font-size: 18px; }
+  .brand-badge { width: 22px; height: 22px; }
+  .wrap { padding: 0 14px; }
+  .page { padding: 18px 0 calc(44px + var(--safe-b)); }
+
+  /* 长链接与 flex 子项不再撑破容器 */
+  .row-between { flex-wrap: wrap; }
+  .row-between > * { min-width: 0; }
+  code { overflow-wrap: anywhere; word-break: break-all; }
+
+  .btn-sm { min-height: 40px; padding: 10px 14px; }
+
+  /* 首页 */
+  .hero { padding: 36px 0 28px; }
+  .hero h1 { font-size: clamp(28px, 9vw, 38px); }
+  .hero .lead { font-size: 16px; }
+  .hero-actions { flex-direction: column; align-items: stretch; gap: 10px; }
+  .hero-actions .btn { width: 100%; }
+  .hero-fixed { min-height: calc(100dvh - var(--nav-h)); }
+  .hs-corgi { width: 156px; right: -18px; }
+  .role-grid { margin-top: 30px; }
+  .role-card { padding: 20px; }
+
+  /* 卡片与列表 */
+  .card-pad { padding: 18px; }
+  .list-row { flex-wrap: wrap; gap: 10px; padding: 14px 16px; }
+  .list-row .kv { min-width: 0; flex: 1 1 40%; }
+
+  .overlay { padding: 12px; }
+  .modal { max-height: 88dvh; padding: 20px; }
+
+  /* 报告：三个数字保持一行，别竖着排三屏 */
+  .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .stat-box { padding: 12px 6px; }
+  .stat-box .num { font-size: 21px; }
+  .stat-box .lab { font-size: 11px; }
+  .conclusion { font-size: 19px; padding: 18px; }
+  .point-card { padding: 16px; }
+}
+
+/* ---------- 面试官实时页：手机 / 平板竖屏改成单屏 App 态 ---------- */
+@media (max-width: 900px) {
+  /* 上面那条 900px 规则会把高度放开，视频随之塌成 0；这里重新锁成单屏 */
+  body.room-wide { height: 100dvh; overflow: hidden; }
+  body.room-wide .shell { height: 100dvh; min-height: 0; }
+  body.room-wide .nav-in { height: 52px; }
+  body.room-wide .page { padding: 8px 12px calc(8px + var(--safe-b)); gap: 8px; }
+
+  body.room-wide .room-head { align-items: center; gap: 6px; }
+  body.room-wide .room-title { font-size: 17px; }
+  body.room-wide .room-sub { font-size: 12px; margin-top: 0; }
+  body.room-wide .join-line { margin-top: 2px; }
+  body.room-wide .join-label,
+  body.room-wide .join-line code { display: none; }      /* 手机上邀请链接没意义，只留复制按钮 */
+  body.room-wide .room-head .row { margin-left: auto; gap: 6px; }
+  body.room-wide .room-head .chip { font-size: 12px; padding: 4px 10px; }
+  body.room-wide .room-head .btn-danger { min-height: 40px; }
+
+  body.room-wide .interview-shell {
+    /* 必须写 minmax(0,1fr)：`1fr` 的最小值是内容的 min-content，
+       右栏那行「纪要 + 状态 + 按钮」会把整页撑出屏幕 */
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 8px;
+  }
+  body.room-wide .interview-main { flex: none; gap: 4px; }
+  body.room-wide .stage-xl {
+    flex: none; height: 34dvh; min-height: 150px; max-height: 300px;
+  }
+  body.room-wide .stage-hint { display: none; }
+  body.room-wide .interview-main > .tiny { display: none; }
+
+  body.room-wide .interview-side {
+    height: auto; min-height: 0; overflow-y: auto;
+    gap: 10px; padding: 0 2px calc(4px + var(--safe-b));
+    overscroll-behavior: contain;
+  }
+  body.room-wide .minutes { padding: 10px 12px; }
+  body.room-wide .minutes-body { max-height: 30dvh; }
+  body.room-wide .signal-band { padding: 10px 12px; }
+
+  /* 提示卡贴住信息栏底部：滚动纪要时也不会把追问刷走 */
+  body.room-wide .cue-wrap {
+    position: sticky; bottom: 0; z-index: 6;
+    min-height: 0; padding-top: 6px;
+    background: linear-gradient(180deg, rgba(253, 251, 246, 0), var(--cream) 45%);
+  }
+  body.room-wide .cue { max-width: none; box-shadow: 0 -6px 20px rgba(29, 29, 29, .12); }
+  body.room-wide .cue-actions { gap: 8px; }
+  body.room-wide .cue-actions .btn { flex: 1; min-height: 44px; }
+
+  body.room-wide #trInput { font-size: 16px; min-height: 40px; }
+  body.room-wide #trSend { min-height: 40px; }
+}
+
+/* ---------- 横屏手机：回到左右两栏，视频占满左侧 ---------- */
+@media (orientation: landscape) and (max-height: 520px) {
+  body.room-wide { height: 100dvh; overflow: hidden; }
+  body.room-wide .shell { height: 100dvh; min-height: 0; }
+  body.room-wide .nav-in { height: 44px; }
+  body.room-wide .page { padding: 6px 12px; gap: 6px; }
+  body.room-wide .join-line,
+  body.room-wide .interview-main > .tiny { display: none; }
+  body.room-wide .interview-shell {
+    grid-template-columns: minmax(0, 1fr) 300px;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 8px;
+  }
+  body.room-wide .stage-xl { flex: 1; height: auto; min-height: 0; max-height: none; }
+  body.room-wide .interview-side { height: 100%; overflow-y: auto; gap: 8px; }
+  body.room-wide .cue-wrap { position: static; background: none; }
+  body.room-wide .minutes-body { max-height: 24dvh; }
+}
+

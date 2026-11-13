@@ -24,6 +24,30 @@ function later(fn, ms) { const id = setTimeout(fn, ms); timers.push(id); return 
 function every(fn, ms) { const id = setInterval(fn, ms); timers.push(id); return id; }
 function clearTimers() { timers.forEach(t => { clearTimeout(t); clearInterval(t); }); timers.length = 0; }
 
+/* ---------- 设备识别 ----------
+   布局切换全部交给 CSS 媒体查询（桌面规则一行没改）；
+   这里只标记设备类型，供运行期分支使用（帧率、邀请链接渲染等）。
+   只切属性、不重渲染：resize 不会打断正在跑的 WebSocket。 */
+const MOBILE_MQ = window.matchMedia('(max-width: 760px)');
+const TOUCH = (navigator.maxTouchPoints || 0) > 0;
+const isMobile = () => MOBILE_MQ.matches;
+function detectDevice() {
+  if (isMobile()) return 'mobile';
+  return (TOUCH && window.innerWidth <= 1024) ? 'tablet' : 'desktop';
+}
+function syncDevice() {
+  const kind = detectDevice();
+  document.documentElement.dataset.device = kind;
+  document.documentElement.classList.toggle('is-mobile', kind === 'mobile');
+}
+syncDevice();
+(function watchDevice() {
+  const onChange = () => syncDevice();
+  if (MOBILE_MQ.addEventListener) MOBILE_MQ.addEventListener('change', onChange);
+  else if (MOBILE_MQ.addListener) MOBILE_MQ.addListener(onChange);
+  window.addEventListener('orientationchange', () => later(onChange, 120));
+})();
+
 function toast(msg) {
   const old = $('.toast'); if (old) old.remove();
   const el = document.createElement('div');
@@ -32,14 +56,38 @@ function toast(msg) {
   later(() => el.remove(), 2200);
 }
 
+/* 复制：https 下用 clipboard，http 或微信内置浏览器里退回 execCommand */
+function copyText(text, okMsg) {
+  const ok = () => toast(okMsg || '已复制');
+  const fail = () => toast('复制失败：请长按手动复制');
+  if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(ok, fail);
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none;';
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  let done = false;
+  try { done = document.execCommand('copy'); } catch (_) { done = false; }
+  ta.remove();
+  done ? ok() : fail();
+}
+
 
 /* ---------- backend bridge ---------- */
-// 后端地址：部署在域名下（80/443）走同源，nginx 反代 /api 和 /ws；
-// 本地开发（8080/5500 等）仍然连 127.0.0.1:8000。
-// 写死成 127.0.0.1 的话，上线后浏览器会去连访客自己的本机，必然连不上。
+// 后端地址：由后端自己托管的页面（/classic/，端口可能是 8000、8010 等）走同源；
+// 部署在域名下（80/443）也走同源，nginx 反代 /api 和 /ws；
+// 只有本地静态服务器（8080/5500 等）打开时才连 127.0.0.1:8000。
+// 写死成 127.0.0.1 的话，上线后浏览器会去连访客自己的本机，必然连不上；
+// 端口不是 80/443 时写死还会让页面连到另一个后端实例，房间号对不上。
 const BE = (() => {
   const p = location.port;
-  if (!p || p === '80' || p === '443') {
+  const servedByBackend = location.pathname.startsWith('/classic');
+  if (servedByBackend || !p || p === '80' || p === '443') {
     return { base: location.origin, ws: location.origin.replace(/^http/, 'ws') };
   }
   return { base: 'http://127.0.0.1:8000', ws: 'ws://127.0.0.1:8000' };
@@ -186,6 +234,7 @@ function reportData(id, role) {
 const routes = {};
 function render() {
   clearTimers();
+  document.body.classList.remove('room-wide');
   const segs = (location.hash || '#/').replace(/^#\/?/, '').split('/').filter(Boolean);
   // 旧版候选人/模拟路由不再承担正式面试；统一进入独立候选人端。
   if (segs[0] === 'candidate') {
@@ -649,16 +698,23 @@ routes['/interviewer/room/:id'] = {
   render(p) {
     const joinUrl = location.origin + '/personal/?room=' + encodeURIComponent(p.id);
     return navHtml('interviewer') +
-      '<main class="wrap page fade-in">' +
-      '<div class="row-between"><div><h1 style="font-size:28px;">面试中</h1>' +
-      '<p class="panel-sub mt-8">房间 ' + esc(p.id) + ' · <span id="timer">00:00</span></p>' +
-      '<p class="tiny muted mt-8">候选人入口：<code>' + esc(joinUrl) + '</code> <button class="btn btn-ghost btn-sm" id="copyLinkBtn">' + I.copy + ' 复制链接</button></p></div>' +
-      '<div class="row"><span class="chip peach" id="adoptChip">采纳 0</span><span class="chip gray" id="ignoreChip">忽略 0</span>' +
-      '<button class="btn btn-danger" id="endIntBtn">' + I.phone + ' 结束面试</button></div></div>' +
-      '<div class="grid-2 mt-16" style="align-items:start;">' +
-      '<div class="stack">' +
-      '<div class="stage" id="intStage"><div class="vid-fill"><div><div class="avatar">李</div><div class="place-name">候选人 · 李想</div></div></div>' +
-      '<div class="status-float"><span class="pulse"></span><span id="intStatus">等待候选人进入…</span></div></div>' +
+      '<main class="wrap page page-wide fade-in">' +
+      '<div class="row-between room-head"><div><h1 class="room-title">面试中</h1>' +
+      '<p class="panel-sub mt-8 room-sub">房间 ' + esc(p.id) + ' · <span id="timer">00:00</span></p>' +
+      '<p class="tiny muted mt-8 join-line">' + (isMobile() ? '' : '<span class="join-label">候选人入口：</span><code>' + esc(joinUrl) + '</code> ') + '<button class="btn btn-ghost btn-sm" id="copyLinkBtn">' + I.copy + ' 复制链接</button></p></div>' +
+      '<div class="row">' +
+      '<button class="btn btn-danger btn-sm" id="endIntBtn">' + I.phone + ' 结束面试</button></div></div>' +
+      '<div class="interview-shell mt-16">' +
+      '<div class="interview-main">' +
+      '<div class="stage stage-xl" id="intStage">' +
+      '<img id="peerVideo" class="peer-video" alt="候选人实时画面">' +
+      '<div class="vid-fill" id="stagePlaceholder"><div><div class="avatar">李</div><div class="place-name">候选人 · 李想</div><p class="stage-hint">候选人开启摄像头后，画面会出现在这里</p></div></div>' +
+      '<div class="status-float"><span class="pulse"></span><span id="intStatus">等待候选人进入…</span></div>' +
+      '<div class="stage-chip" id="stageChip">画面未开启</div>' +
+      '</div>' +
+      '<p class="tiny muted">隐私提示：本场信号与提示卡仅同步给当场面官本人，不写入候选人可见画面。</p>' +
+      '</div>' +
+      '<aside class="interview-side">' +
       '<div class="minutes" id="minutesCard">' +
       '<div class="minutes-head"><b>面试纪要</b><span class="tiny muted" id="sttState">麦克风未开启</span>' +
       '<button class="btn btn-sm btn-ghost" id="sttBtn">开启语音转写</button></div>' +
@@ -667,28 +723,26 @@ routes['/interviewer/room/:id'] = {
       '<input id="trInput" placeholder="手打一句，回车发送" style="flex:1;padding:8px 11px;border:1px solid var(--line);border-radius:9px;font:inherit;" />' +
       '<button class="btn btn-sm btn-primary" id="trSend">发送</button></div>' +
       '</div>' +
-      '<p class="tiny muted">隐私提示：本场信号与提示卡仅同步给当场面官本人，不写入候选人可见画面。</p>' +
-      '</div>' +
-      '<div class="stack">' +
       '<div class="signal-band" id="signalBand"><div class="signal-head"><b>候选人情信号（实时）</b><span class="tiny muted">无数字 · 仅面官可见</span><span class="tiny muted" id="bandNote" style="margin-left:auto;">连接中…</span></div>' +
       '<div class="signal-lanes">' +
       lane('语速', 'l1', '40') + lane('停顿', 'l2', '45') + lane('表情', 'l3', '35') + lane('眼神', 'l4', '30') +
       '</div></div>' +
       '<div class="cue-wrap" id="cueWrap"></div>' +
-      '</div></div>' +
+      '</aside></div>' +
       '</main>' + footerHtml();
   },
   mount(p) {
     const state = { code: p.id, sec: 0, capi: 0, adopt: 0, ignore: 0, cues: [], ws: null, ended: false, hasSignal: false };
+    document.body.classList.add('room-wide');
     window.__corgiJob = '前端工程师';
     every(() => { state.sec++; $('#timer').textContent = fmtTs(state.sec); }, 1000);
     every(() => { if (!state.hasSignal) demoTaint(); }, 2600);
     connectInterviewer(state);
     setupMinutes(state);
+    every(() => refreshStageChip(state), 1500);
     $('#copyLinkBtn').addEventListener('click', () => {
       const url = location.origin + '/personal/?room=' + encodeURIComponent(state.code);
-      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(() => toast('链接已复制'), () => toast('复制失败'));
-      else toast('复制失败：浏览器不支持');
+      copyText(url, '链接已复制');
     });
     $('#endIntBtn').addEventListener('click', () => {
       state.ended = true;
@@ -743,6 +797,25 @@ function connectInterviewer(state) {
   ws.onclose = () => { if (!state.ended) { const n = $('#bandNote'); if (n) n.textContent = '后端离线 · 本地演示模式'; const st = $('#intStatus'); if (st && !state.hasSignal) st.textContent = '等待候选人进入…'; } };
   every(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'ping', t: state.sec })); }, 15000);
 }
+function applyPeerFrame(state, m) {
+  const el = $('#peerVideo'); if (!el || !m.img) return;
+  el.src = m.img;
+  el.classList.add('on');
+  const ph = $('#stagePlaceholder'); if (ph) ph.style.display = 'none';
+  const chip = $('#stageChip'); if (chip) chip.textContent = '候选人画面 · 实时';
+  state.lastFrameAt = Date.now();
+}
+function resetPeerStage(state) {
+  state.lastFrameAt = 0;
+  const el = $('#peerVideo'); if (el) { el.classList.remove('on'); el.removeAttribute('src'); }
+  const ph = $('#stagePlaceholder'); if (ph) ph.style.display = '';
+  const chip = $('#stageChip'); if (chip) chip.textContent = '画面未开启';
+}
+function refreshStageChip(state) {
+  const chip = $('#stageChip'); if (!chip) return;
+  if (!state.lastFrameAt) { chip.textContent = '画面未开启'; return; }
+  if (Date.now() - state.lastFrameAt > 4000) chip.textContent = '画面已暂停';
+}
 function handleIntMsg(state, m) {
   if (!m || !m.type) return;
   if (m.type === 'hello_ack') {
@@ -771,6 +844,10 @@ function handleIntMsg(state, m) {
   else if (m.type === 'peer') {
     const st = $('#intStatus');
     if (m.role === 'candidate') st.textContent = m.state === 'online' ? '候选人已进入' : '等待候选人进入…';
+    if (m.role === 'candidate' && m.state !== 'online') resetPeerStage(state);
+  }
+  else if (m.type === 'peer_frame') {
+    applyPeerFrame(state, m);
   }
   else if (m.type === 'signal') {
     state.hasSignal = true;
@@ -823,8 +900,8 @@ function pushCue(state, h) {
   later(() => { c.dim = true; renderCues(state); }, 3000);
 }
 function syncChips(state) {
-  $('#adoptChip').textContent = '采纳 ' + state.adopt;
-  $('#ignoreChip').textContent = '忽略 ' + state.ignore;
+  const adopt = $('#adoptChip'); if (adopt) adopt.textContent = '采纳 ' + state.adopt;
+  const ignore = $('#ignoreChip'); if (ignore) ignore.textContent = '忽略 ' + state.ignore;
 }
 function renderCues(state) {
   const wrap = $('#cueWrap'); if (!wrap) return;
