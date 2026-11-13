@@ -35,6 +35,7 @@ class RoomHub:
         self.latest_frame: bytes | None = None
         self.latest_t: float = 0.0
         self.worker: asyncio.Task | None = None
+        self.consent_warned = False
 
     # ---------------- 连接管理 ----------------
     def add(self, role: str, ws) -> None:
@@ -44,6 +45,23 @@ class RoomHub:
 
     def remove(self, role: str, ws) -> None:
         self.conns.get(role, set()).discard(ws)
+        if not any(self.conns.values()):
+            self.shutdown()
+
+    def shutdown(self) -> None:
+        """请求停掉后台 worker。房间结束、双方都掉线时都要调，否则永不停机。"""
+        if self.worker is not None and not self.worker.done():
+            self.worker.cancel()
+
+    async def stop(self) -> None:
+        """取消并**等 worker 真正退出**。
+
+        cancel() 只是投递一个取消信号，任务要等事件循环调度一次才会变成 done。
+        结束面试时用这个，才能保证"报告发出去的时候分析已经彻底停了"。
+        """
+        self.shutdown()
+        if self.worker is not None:
+            await asyncio.gather(self.worker, return_exceptions=True)
 
     async def send(self, role: str, payload: dict) -> None:
         dead = []
@@ -75,9 +93,27 @@ class RoomHub:
             await self.frame_ready.wait()
             self.frame_ready.clear()
 
+            # 取走即清空。**必须在这里清，不能放到 sleep 之后** ——
+            # 放到 sleep 之后会把睡眠期间到达的新帧覆盖成 None，
+            # 于是下一轮处理一个空帧，产出一条 quality=0 / face_count=0
+            # 的假样本，把基线和报告一起污染。
             frame, t = self.latest_frame, self.latest_t
+            self.latest_frame = None
+
             session = self.session
             if session is None:
+                continue
+            if not session.consent:
+                # 未授权：一条生理数据都不许碰，连 API 都不能调。
+                # 这是整个项目合规叙事的根基，不是可选项。
+                if not self.consent_warned:
+                    self.consent_warned = True
+                    await self.send("interviewer", {
+                        "type": "status",
+                        "state": "no_consent",
+                        "reason": "候选人未授权视频分析，本次仅语音",
+                        "t": t,
+                    })
                 continue
 
             try:
@@ -111,7 +147,6 @@ class RoomHub:
 
             # 限制云端 API 调用频率，省钱也省延迟
             await asyncio.sleep(config.SAMPLE_MIN_INTERVAL)
-            self.latest_frame = None
 
     # ---------------- 轮次处理 ----------------
     async def on_turn_start(self, t: float) -> None:
@@ -176,11 +211,38 @@ class RoomHub:
         if session is None:
             return
         STORE.end_session(session)
-        rep = report_mod.build_report(session)
-        await self.broadcast({
+        await self.stop()        # 等 worker 真正退出，否则长跑泄漏
+
+        base = report_mod.build_report(session)
+        await self.send("interviewer", {
             "type": "report_ready",
             "session_id": session.id,
-            "report": rep,
+            "report": base,
+        })
+        # 两侧拿到的报告不一样：面试官得到「该往哪问」，候选人得到「该往哪改」
+        await self.send("candidate", {
+            "type": "report_ready",
+            "session_id": session.id,
+            "report": report_mod.build_candidate_report(session, base),
+        })
+
+    # ---------------- 重连补齐 ----------------
+    async def send_snapshot(self) -> None:
+        """面试官刷新页面/断线重连时补上已发生的状态，否则页面一片空白。"""
+        session = self.session
+        await self.send("interviewer", {
+            "type": "snapshot",
+            "session_id": self.room.session_id,
+            "status": self.room.status,
+            "baseline_ready": self.room.baseline.ready,
+            "turns": len(session.turns) if session else 0,
+            "hints": [
+                {"id": h.id, "turn_id": h.turn_id, "kind": h.kind,
+                 "text": h.text, "why": h.why, "t": round(h.t, 2),
+                 "action": h.action}
+                for h in (session.hints if session else [])
+            ],
+            "adopt_rate": round(session.adopt_rate, 3) if session else 0.0,
         })
 
 
@@ -232,7 +294,9 @@ async def handle_message(hub: RoomHub, role: str, msg: dict) -> None:
                 })
 
     elif mtype == "end":
-        await hub.on_end()
+        # 只有面试官能结束整场，候选人最多退出连接
+        if role == "interviewer":
+            await hub.on_end()
 
     elif mtype == "ping":
         await hub.send(role, {"type": "pong", "t": t})

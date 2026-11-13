@@ -131,6 +131,10 @@ async def room_ws(ws: WebSocket, code: str,
         "server_t": round(time.time(), 3),
     })
 
+    # 面试官刷新或重连时补齐已发生的状态
+    if role == "interviewer":
+        await hub.send_snapshot()
+
     # 通知对端有新人进来
     peer = "interviewer" if role == "candidate" else "candidate"
     await hub.send(peer, {"type": "peer", "role": role,

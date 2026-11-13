@@ -89,15 +89,18 @@ def build_report(session: Session) -> dict:
     return report
 
 
-def build_candidate_report(session: Session) -> dict:
-    """候选人版：同一个组件，换语气。不出现任何分数。"""
-    report = build_report(session)
-    return {
-        **report,
+def build_candidate_report(session: Session, base: dict | None = None) -> dict:
+    """候选人版：同一个组件，换语气。不出现任何分数。
+
+    传 base 可避免重复计算（ws.on_end 已经构建过面试官版）。
+    """
+    report = dict(base) if base else build_report(session)
+    report.update({
         "role": "candidate",
         "title": "这次练习的 3 个收获",
         "disclaimer": "这份报告只属于你，可以导出，也可以删除。",
-    }
+    })
+    return report
 
 
 def _llm_summary(points: list[dict]) -> Optional[str]:

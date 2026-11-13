@@ -32,9 +32,12 @@ uvicorn main:app --reload --port 8000
 ### 验证
 
 ```bash
-python -m unittest discover -s tests -v   # 18 个引擎单测
+python -m unittest discover -s tests -v   # 24 个（18 引擎 + 6 管道）
 python tests/smoke_flow.py                # 端到端全链路，不需要 fastapi
 ```
+
+`test_pipeline.py` 专门盯三类「测试全绿但其实已经坏了」的问题：背压丢帧产生空帧假样本、
+worker 泄漏、候选人未授权却仍在分析。
 
 `smoke_flow.py` 会在几秒内走完：建房间 → 采样 → 封板基线 → 应激 → 双确认 → 出提示 → 反馈 → 报告 → 场次列表。
 
@@ -150,14 +153,18 @@ python tests/smoke_flow.py                # 端到端全链路，不需要 fasta
 - [ ] `python tests/smoke_flow.py` 打印「全链路通过」
 - [ ] `/api/rooms` 建房间返回 6 位房间号
 - [ ] 候选人 WS 连上后，面试官收到 `peer: online`
+- [ ] 面试官刷新/重连后收到 `snapshot`，历史提示还在
 - [ ] 基线期 `signal` 里 `baseline_ready=false` 且 `baseline_remaining` 在倒数
 - [ ] 基线期**绝不产生 `hint`**（这是合规红线）
 - [ ] 正常轮次不产生 `hint`（静默是常态）
 - [ ] 双异常轮次 3 秒内产生 `hint`
 - [ ] 点「用掉」后收到 `hint_ack` 且 `adopt_rate` 变化
 - [ ] 结束后面试官收到 `report_ready`，`points` ≤ 3
+- [ ] 结束后面试官收到的是「面试质量报告」，候选人是「3 个收获」两份不同文案
 - [ ] 报告里**没有任何 score / rank 字段**
+- [ ] **候选人 `consent=0` 时**：面试官收到 `status: no_consent`，且**一条 `signal` 都没有**
 - [ ] 视频 API 挂掉时，面试官收到 `status: degraded` 而不是断线
+- [ ] 结束面试后 5 秒，日志里不应再出现视觉 API 调用（worker 已停）
 
 ---
 
@@ -166,3 +173,6 @@ python tests/smoke_flow.py                # 端到端全链路，不需要 fasta
 1. **候选人 5fps 上报，云端 API 要 1–2s。** 如果排队，队列会无限增长，提示延迟从 2 秒变 20 秒。`ws.py` 用的是「覆盖写入 + Event」，永远只处理最新帧，旧帧直接丢。**不要改成 `asyncio.Queue`。**
 2. **视觉 API 必须 `asyncio.to_thread`。** 同步 HTTP 会卡死事件循环，整条管道一起僵。
 3. **基线未就绪时不许出任何提示。** `judge_turn` 第一道闸门就是这个，`Baseline.remaining()` 给前端倒计时用。别为了 demo 好看把这个门去掉——那是全项目唯一的合规叙事。
+4. **`latest_frame` 只能在取帧时清空，不能在 `sleep` 之后清空。** 放错位置会把睡眠期间到达的新帧覆盖成 `None`，下一轮处理空帧时产出一条 `quality=0` 的假样本，把基线和报告一起污染。（`test_frame_arriving_during_sleep_is_kept` 钉住这一点。）
+5. **`session.consent` 是硬闸门，不是 UI 提示。** 未授权时连视觉 API 都不许调；`test_no_analysis_without_consent` 用计数 provider 验证调用次数为 0。
+6. **`cancel()` 不等于停。** 结束面试必须 `await hub.stop()` 等任务真的结束，否则"报告发出去的时候分析还在跑"，长跑必泄漏。
