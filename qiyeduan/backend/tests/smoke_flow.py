@@ -28,6 +28,10 @@ import config          # noqa: E402
 import report as report_mod   # noqa: E402
 from store import STORE, default_questions   # noqa: E402
 from ws import get_hub   # noqa: E402
+import ws as ws_mod      # noqa: E402
+
+# 冒烟测试不该联网、不该花钱：屏蔽真 LLM
+ws_mod.LLM = None
 
 
 class FakeWS:

@@ -6,10 +6,8 @@
 """
 from __future__ import annotations
 
-import os
-from typing import Optional
-
 import config
+import llm as llm_mod
 from store import Session
 
 
@@ -66,7 +64,16 @@ def build_report(session: Session) -> dict:
     summary = build_summary(points, session)
 
     if config.LLM_ENABLED:
-        summary = _llm_summary(points) or summary
+        # 摘要交给 LLM 写；它挂了/超时/没配 key 都退回上面的模板，
+        # 报告页永远不能白屏。
+        client = llm_mod.get_llm()
+        if client is not None:
+            try:
+                summary = client.summarize(
+                    points, {"job_title": session.job_title,
+                             "turns": len(session.turns)}) or summary
+            except Exception:
+                pass
 
     report = {
         "session_id": session.id,
@@ -109,27 +116,3 @@ def build_candidate_report(session: Session, base: dict | None = None) -> dict:
         "disclaimer": "这份报告只属于你，可以导出，也可以删除。",
     })
     return report
-
-
-def _llm_summary(points: list[dict]) -> Optional[str]:
-    """可选：接 TTC 的语音/LLM 接口把要点写成一段自然语言。
-
-    失败一律返回 None，由上面的模板兜底 —— 报告页永远不能白屏。
-    """
-    if not points:
-        return None
-    try:  # pragma: no cover - 需真实网络
-        import json
-        import urllib.request
-
-        url = os.getenv("LLM_SUMMARY_URL", "")
-        if not url:
-            return None
-        body = json.dumps({"points": points}, ensure_ascii=False).encode()
-        req = urllib.request.Request(
-            url, data=body,
-            headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return json.loads(resp.read().decode()).get("summary")
-    except Exception:
-        return None

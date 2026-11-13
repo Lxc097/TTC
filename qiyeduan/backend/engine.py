@@ -41,6 +41,9 @@ class Behavior:
     filler_density: float = 0.0     # 填充词密度（"那个""就是"）
     speech_rate_drop: float = 0.0   # 语速相对本场基线下降幅度
     gaze_off: float = 0.0           # 视线离屏率
+    # 第五通道：语义回避程度。由 LLM 读 transcript 给出，0=直答 1=明显在绕。
+    # 前四个通道来自 STT/视觉，这一条来自语言模型 —— 也是唯一"会理解内容"的信号。
+    semantic: float = 0.0
 
     def anomaly(self) -> float:
         """行为异常总分 0..1。
@@ -52,7 +55,8 @@ class Behavior:
         也奖励多通道同时异常。
         """
         vals = [v for v in (self.pause_ratio, self.filler_density,
-                            self.speech_rate_drop, self.gaze_off) if v > 0]
+                            self.speech_rate_drop, self.gaze_off,
+                            self.semantic) if v > 0]
         if not vals:
             return 0.0
         mean = sum(vals) / len(vals)
@@ -60,6 +64,7 @@ class Behavior:
 
     def top_reason(self) -> str:
         pairs = [
+            (self.semantic, "回答在回避关键点"),
             (self.pause_ratio, "停顿明显变长"),
             (self.gaze_off, "视线多次离开屏幕"),
             (self.filler_density, "填充词变多"),
@@ -80,6 +85,8 @@ class Turn:
     phys_mean: float = 0.0
     beh: Behavior = field(default_factory=Behavior)
     judged: bool = False
+    # LLM 对这一段回答的语义分析结果 {semantic, probe, why}，失败时为 None
+    llm: Optional[dict] = None
 
     @property
     def duration(self) -> float:

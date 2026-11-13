@@ -79,6 +79,11 @@ class PipelineCase(unittest.IsolatedAsyncioTestCase):
         config.BASELINE_MIN_SAMPLES = 3
         config.SAMPLE_MIN_INTERVAL = 0.3
 
+        # 屏蔽真 LLM：本地 .env 里 LLM_ENABLED=1 时，on_turn_end 会真的发请求，
+        # 单元测试既不该联网也不该花钱。需要测 LLM 的用例自己装假实现。
+        self._orig_llm = ws_mod.LLM
+        ws_mod.LLM = None
+
         # 这组测试验证的是**逐帧管道**，必须强制回到 frame 模式。
         # 否则本地 .env 一改成 facephys，VIDEO_MODE 就会把 push_frame 的事件
         # 关掉，所有用例一起挂——那不是代码坏了，是环境串了。
@@ -104,6 +109,7 @@ class PipelineCase(unittest.IsolatedAsyncioTestCase):
             config.SAMPLE_MIN_INTERVAL = self._orig
         ws_mod.VIDEO_MODE, ws_mod.SEGMENT_MODE = self._orig_modes
         ws_mod.PROVIDER = self._orig_provider
+        ws_mod.LLM = self._orig_llm
 
     async def drain(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
@@ -456,6 +462,105 @@ class TestAuditFixes(PipelineCase):
         self.assertEqual(rep["verification"]["confirmed"], 0)
         self.assertEqual(rep["verification"]["unconfirmed"], 1,
                          "没坐实的次数必须如实写进报告")
+
+
+class FakeLLM:
+    """假的语义分析器。返回固定的 semantic/probe，不发网络请求。"""
+
+    def __init__(self, semantic: float = 0.9, probe: str = ""):
+        self.semantic = semantic
+        self.probe = probe
+        self.calls = 0
+
+    def analyze_turn(self, question, answer, beh_summary=""):
+        self.calls += 1
+        return {"semantic": self.semantic, "probe": self.probe,
+                "why": "用了「战略调整」带过原因"}
+
+    def summarize(self, points, meta):
+        return None
+
+
+class TestLlmSemanticChannel(PipelineCase):
+    """语义通道：LLM 读 transcript 给分，参与触发，但不越过数值闸门。"""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.vp = VideoProvider(hr=96.0)
+        ws_mod.PROVIDER = self.vp
+
+    async def _baseline(self, hr: float = 80.0) -> None:
+        for t, h in ((0.0, hr - 1), (5.0, hr), (9.0, hr + 1)):
+            await self.hub._emit_sample(
+                PhysioSample(t=t, hr=h, rr=16.0, quality=0.6, face_count=1), t)
+        self.hub.room.baseline.freeze()
+
+    async def test_semantic_alone_triggers_evidence(self):
+        """行为特征全部正常，只有语义回避 —— 也应该触发取证。"""
+        ws_mod.LLM = FakeLLM(semantic=0.9)
+        STORE.start_session(self.room, consent=True)
+        await self.hub.on_turn_start(120.0)
+        await self.hub.on_turn_end(
+            150.0, "后来因为公司战略调整就没上线，具体不太清楚。",
+            {"pause_ratio": 0.05, "gaze_off": 0.0})
+
+        req = [m for m in self.cws.msgs if m["type"] == "record_request"]
+        self.assertEqual(len(req), 1, "语义回避 0.9 应该触发取证")
+        self.assertAlmostEqual(self.hub.pending["beh"].semantic, 0.9)
+
+    async def test_no_llm_behaves_exactly_as_before(self):
+        ws_mod.LLM = None
+        STORE.start_session(self.room, consent=True)
+        await self.hub.on_turn_start(120.0)
+        await self.hub.on_turn_end(
+            150.0, "后来因为公司战略调整就没上线，具体不太清楚。",
+            {"pause_ratio": 0.05, "gaze_off": 0.0})
+        self.assertEqual(self.hub.pending, None, "没有 LLM 时退回原逻辑，不触发")
+
+    async def test_llm_probe_becomes_hint_text(self):
+        ws_mod.LLM = FakeLLM(semantic=0.9, probe="追问：为什么没上线")
+        STORE.start_session(self.room, consent=True)
+        await self._baseline()
+        await self.hub.on_turn_start(120.0)
+        await self.hub.on_turn_end(150.0, "后来因为战略调整就没上线。",
+                                   {"pause_ratio": 0.05})
+        await self.hub.on_video_chunk("eA==", 170.0)
+
+        hints = [m for m in self.iws.msgs if m["type"] == "hint"]
+        self.assertEqual(len(hints), 1)
+        self.assertEqual(hints[0]["text"], "追问：为什么没上线",
+                         "probe 类提示要用 LLM 写的追问，而不是模板")
+
+    async def test_llm_still_cannot_skip_physiological_gate(self):
+        """语义再高，生理没确认上也不许出提示 —— LLM 不能越过双确认。"""
+        ws_mod.LLM = FakeLLM(semantic=1.0, probe="追问：随便问点什么")
+        self.vp.hr = 80.4          # 与基线持平
+        STORE.start_session(self.room, consent=True)
+        await self._baseline()
+        await self.hub.on_turn_start(120.0)
+        await self.hub.on_turn_end(150.0, "后来因为战略调整就没上线。",
+                                   {"pause_ratio": 0.05})
+        await self.hub.on_video_chunk("eA==", 170.0)
+
+        self.assertEqual([m for m in self.iws.msgs if m["type"] == "hint"], [],
+                         "LLM 语义满分也不能绕过生理确认")
+        self.assertTrue([m for m in self.iws.msgs
+                         if m["type"] == "confirm_result"
+                         and m["confirmed"] is False])
+
+    async def test_llm_failure_falls_back_silently(self):
+        class Boom(FakeLLM):
+            def analyze_turn(self, *a, **k):
+                raise RuntimeError("timeout")
+
+        ws_mod.LLM = Boom()
+        STORE.start_session(self.room, consent=True)
+        await self.hub.on_turn_start(120.0)
+        await self.hub.on_turn_end(150.0, "后来因为战略调整就没上线。",
+                                   {"pause_ratio": 0.8})
+        # 语义挂了，但行为 0.8 仍然触发，说明降级不影响原有链路
+        self.assertEqual(len([m for m in self.cws.msgs
+                              if m["type"] == "record_request"]), 1)
 
 
 if __name__ == "__main__":

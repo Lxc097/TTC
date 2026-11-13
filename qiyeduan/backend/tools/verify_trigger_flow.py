@@ -84,6 +84,7 @@ class FakeWS:
 
 
 async def main() -> int:
+    ws_mod.LLM = None          # 验证脚本不联网、不烧 LLM 额度
     ws_mod.PROVIDER = ScriptedProvider([
         (96.0, 0.45),    # 第一次取证：明显高于基线 → 应确认成功
         (80.4, 0.50),    # 第二次取证：与基线持平 → 应确认失败

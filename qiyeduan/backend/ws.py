@@ -19,6 +19,7 @@ from collections import deque
 from typing import Any
 
 import config
+import llm as llm_mod
 import report as report_mod
 from engine import (Behavior, PhysioSample, Turn, evaluate_trigger,
                     judge_turn, summarize_turn)
@@ -26,6 +27,8 @@ from store import STORE, Room, Session
 from vision import get_provider
 
 PROVIDER = get_provider()
+# 分析交给 LLM，测量留给 FacePhys。没配 key 时为 None，整条链退回模板。
+LLM = llm_mod.get_llm()
 
 # 视频形态（FacePhys）：一次要一段 ≥15 秒的视频，一个视频块换一个采样点。
 # 这条路完全不经过逐帧背压，走 on_video_chunk。
@@ -284,6 +287,23 @@ class RoomHub:
             speech_rate_drop=float(b.get("speech_rate_drop", 0) or 0),
             gaze_off=float(b.get("gaze_off", 0) or 0),
         )
+
+        # 语义分析交给 LLM：这是唯一会"读内容"的信号。
+        # 失败一律静默，beh.semantic 保持 0，后面的判断完全退回原样。
+        if LLM is not None and turn.transcript:
+            try:
+                res = await asyncio.to_thread(
+                    LLM.analyze_turn, "",
+                    turn.transcript,
+                    f"停顿{turn.beh.pause_ratio:.2f} "
+                    f"语速降{turn.beh.speech_rate_drop:.2f} "
+                    f"视线离屏{turn.beh.gaze_off:.2f}")
+            except Exception:
+                res = None
+            if res:
+                turn.beh.semantic = res["semantic"]
+                turn.llm = res
+
         summarize_turn(turn, session.samples, self.room.baseline)
 
         draft = judge_turn(turn, self.room.baseline,
@@ -301,6 +321,7 @@ class RoomHub:
         })
 
         if draft is not None:
+            self._use_llm_text(draft, turn.llm)
             hint = STORE.add_hint(session, draft, t, turn_id=turn.turn_id)
             self.room.last_hint_t = t
             await self.send("interviewer", {
@@ -317,6 +338,22 @@ class RoomHub:
         await self._maybe_request_confirm(turn, t)
 
     # ---------------- 触发 → 确认 ----------------
+    @staticmethod
+    def _use_llm_text(draft, llm_res) -> None:
+        """probe 类提示优先用 LLM 写的追问。
+
+        只换 probe：upgrade（题太浅）和 wrap（该收了）依赖节奏信息，
+        语言模型看不见节奏，硬让它写反而更差。
+        LLM 没结果时 draft 原样保留（模板兜底），绝不空手。
+        """
+        if draft is None or not llm_res:
+            return
+        if draft.kind == "probe" and llm_res.get("probe"):
+            draft.text = llm_res["probe"]
+            why = (llm_res.get("why") or "").strip()
+            if why and why not in draft.why:
+                draft.why = f"{draft.why}；{why}"[:60]
+
     async def _maybe_request_confirm(self, turn: Turn, t: float) -> None:
         """行为信号报警时，请求候选人录一段视频作为**证据**。
 
@@ -354,7 +391,8 @@ class RoomHub:
             return
 
         self.pending = {"turn_id": turn.turn_id, "t": t, "beh": turn.beh,
-                        "reason": trig.reason, "score": trig.score}
+                        "reason": trig.reason, "score": trig.score,
+                        "llm": turn.llm}
         self.confirm_used += 1
         session.confirms_requested += 1
 
@@ -400,6 +438,7 @@ class RoomHub:
             })
             return
 
+        self._use_llm_text(draft, pending.get("llm"))
         hint = STORE.add_hint(session, draft, pending["t"],
                               turn_id=pending["turn_id"])
         session.confirms_confirmed += 1

@@ -112,7 +112,12 @@ HR_MAX_JUMP = _f("HR_MAX_JUMP", 15.0)
 
 # ---------- 报告 ----------
 REPORT_MAX_POINTS = _i("REPORT_MAX_POINTS", 3)
+# LLM 负责"分析"（语义判断 / 写追问 / 写总结），FacePhys 只负责"测量"。
+# 没配 key 或关掉时，整条链自动退回模板，不会报错。
 LLM_ENABLED = os.getenv("LLM_ENABLED", "0") == "1"
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
+LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
+LLM_TIMEOUT = _f("LLM_TIMEOUT", 8.0)
 
 # ---------- Mock 专用 ----------
 # 格式 "30-45,120-140"，表示这些时间段模拟负荷升高，方便排练 demo
