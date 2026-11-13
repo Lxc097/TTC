@@ -34,7 +34,16 @@ function toast(msg) {
 
 
 /* ---------- backend bridge ---------- */
-const BE = { base: 'http://127.0.0.1:8000', ws: 'ws://127.0.0.1:8000' };
+// 后端地址：部署在域名下（80/443）走同源，nginx 反代 /api 和 /ws；
+// 本地开发（8080/5500 等）仍然连 127.0.0.1:8000。
+// 写死成 127.0.0.1 的话，上线后浏览器会去连访客自己的本机，必然连不上。
+const BE = (() => {
+  const p = location.port;
+  if (!p || p === '80' || p === '443') {
+    return { base: location.origin, ws: location.origin.replace(/^http/, 'ws') };
+  }
+  return { base: 'http://127.0.0.1:8000', ws: 'ws://127.0.0.1:8000' };
+})();
 async function apiJSON(path, opt) {
   const res = await fetch(BE.base + path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opt));
   if (!res.ok) throw new Error('API ' + res.status);
