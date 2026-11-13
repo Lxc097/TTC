@@ -1,0 +1,7 @@
+.camera-preview { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 15px; background: #182237; }
+.camera-preview video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.camera-preview__empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; height: 100%; color: #f3f6fc; text-align: center; padding: 20px; font-size: 14px; }
+.camera-preview__empty-icon { display: grid; place-items: center; width: 58px; height: 58px; border-radius: 16px; border: 1px solid #47516a; color: #c3cee6; background: #27344e; }
+.camera-preview__empty small { font-size: 12px; color: #9aa8c2; }
+.camera-preview__live { position: absolute; top: 14px; left: 14px; display: inline-flex; align-items: center; gap: 7px; border: 1px solid rgba(255,255,255,.22); border-radius: 7px; background: rgba(14, 25, 45, .65); color: #fff; padding: 6px 9px; font-size: 11px; backdrop-filter: blur(6px); }
+.camera-preview__live span { width: 6px; height: 6px; border-radius: 50%; background: #32d4a2; box-shadow: 0 0 0 3px rgba(50,212,162,.18); }

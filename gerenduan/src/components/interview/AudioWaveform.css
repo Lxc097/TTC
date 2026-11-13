@@ -1,0 +1,7 @@
+.audio-waveform{position:relative;display:flex;align-items:center;justify-content:center;width:100%;height:54px;min-width:0;color:#71809d}
+.audio-waveform canvas{width:100%;height:100%;display:block}
+.audio-waveform__fallback{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);white-space:nowrap;display:inline-flex;align-items:center;gap:8px;background:rgba(245,248,253,.93);padding:4px 10px;border-radius:999px;color:#8794aa;font-size:11px;line-height:1.4}
+.audio-waveform__thinking-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#90a2cc;animation:audio-thinking 1.6s ease-in-out infinite}
+.audio-waveform--user .audio-waveform__fallback{background:rgba(238,249,245,.94);color:#638f81}
+@keyframes audio-thinking{50%{opacity:.32;transform:scale(.7)}}
+@media(prefers-reduced-motion:reduce){.audio-waveform__thinking-dot{animation:none}}
