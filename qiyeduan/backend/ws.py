@@ -19,7 +19,8 @@ from typing import Any
 
 import config
 import report as report_mod
-from engine import Behavior, PhysioSample, Turn, judge_turn, summarize_turn
+from engine import (Behavior, PhysioSample, Turn, evaluate_trigger,
+                    judge_turn, summarize_turn)
 from store import STORE, Room, Session
 from vision import get_provider
 
@@ -49,6 +50,8 @@ class RoomHub:
         self.consent_warned = False
         self.seg_buffer: deque[bytes] = deque(maxlen=SEGMENT_FRAMES)
         self.video_busy = False      # 视频形态：同一时间只允许一段在分析
+        self.pending: dict | None = None   # 已请求、等待回来的证据
+        self.confirm_used = 0              # 本场已经花掉几次确认额度
 
     # ---------------- 连接管理 ----------------
     def add(self, role: str, ws) -> None:
@@ -233,6 +236,7 @@ class RoomHub:
 
         if sample is not None:
             await self._emit_sample(sample, t)
+            await self._apply_confirmation(sample, t)
 
     # ---------------- 轮次处理 ----------------
     async def on_turn_start(self, t: float) -> None:
@@ -276,11 +280,93 @@ class RoomHub:
             "beh_anomaly": round(turn.beh.anomaly(), 2),
         })
 
-        if draft is None:
-            return   # 静默。这是常态，绝大多数轮次不应该有提示。
+        if draft is not None:
+            hint = STORE.add_hint(session, draft, t)
+            self.room.last_hint_t = t
+            await self.send("interviewer", {
+                "type": "hint",
+                "id": hint.id,
+                "turn_id": hint.turn_id,
+                "kind": hint.kind,
+                "text": hint.text,
+                "why": hint.why,
+                "t": round(hint.t, 2),
+            })
 
-        hint = STORE.add_hint(session, draft, t)
-        self.room.last_hint_t = t
+        # 行为信号触发 → 花钱采一段视频去确认（而不是固定每 30 秒采）
+        await self._maybe_request_confirm(turn, t)
+
+    # ---------------- 触发 → 确认 ----------------
+    async def _maybe_request_confirm(self, turn: Turn, t: float) -> None:
+        """行为信号报警时，请求候选人录一段视频作为**证据**。
+
+        为什么要有这道闸门：行为信号免费，生理片段一次 17 万 token。
+        没有节制的采样在经济上不成立（一场面试 90 段 = 1575 万 token）。
+        """
+        session = self.session
+        if session is None:
+            return
+        # 上一段证据迟迟没回来就作废，否则一次失败的请求会永久卡住后续触发
+        if (self.pending is not None
+                and t - self.pending["t"] > config.PENDING_TIMEOUT):
+            self.pending = None
+        if self.pending is not None:
+            return
+        if self.confirm_used >= config.CONFIRM_MAX:
+            return
+
+        trig = evaluate_trigger(turn.beh)
+        if not trig.fired:
+            return
+
+        self.pending = {"turn_id": turn.turn_id, "t": t, "beh": turn.beh,
+                        "reason": trig.reason, "score": trig.score}
+        self.confirm_used += 1
+
+        await self.send("candidate", {
+            "type": "record_request",
+            "t": t,
+            "seconds": config.CONFIRM_CLIP_SECONDS,
+            "turn_id": turn.turn_id,
+            "reason": trig.reason,
+        })
+        await self.send("interviewer", {
+            "type": "confirm_requested",
+            "t": t,
+            "turn_id": turn.turn_id,
+            "reason": trig.reason,
+            "used": self.confirm_used,
+            "budget": config.CONFIRM_MAX,
+        })
+
+    async def _apply_confirmation(self, sample: PhysioSample, t: float) -> None:
+        """证据回来了：过双确认。生理没确认上就明确告诉面试官"没证实"。"""
+        session = self.session
+        pending = self.pending
+        if session is None or pending is None:
+            return
+        self.pending = None
+
+        z = self.room.baseline.load_z(sample)
+        turn = Turn(turn_id=pending["turn_id"], start_t=pending["t"],
+                    end_t=pending["t"], phys_peak=z, phys_mean=z,
+                    beh=pending["beh"])
+        draft = judge_turn(turn, self.room.baseline, self.room.last_hint_t,
+                           session.turns)
+
+        if draft is None:
+            await self.send("interviewer", {
+                "type": "confirm_result",
+                "t": round(pending["t"], 2),
+                "turn_id": pending["turn_id"],
+                "confirmed": False,
+                "load_z": round(z, 2),
+                "quality": round(sample.quality, 2),
+            })
+            return
+
+        hint = STORE.add_hint(session, draft, pending["t"])
+        self.room.last_hint_t = pending["t"]
         await self.send("interviewer", {
             "type": "hint",
             "id": hint.id,
@@ -289,6 +375,7 @@ class RoomHub:
             "text": hint.text,
             "why": hint.why,
             "t": round(hint.t, 2),
+            "confirmed": True,
         })
 
     # ---------------- 结束 ----------------

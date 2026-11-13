@@ -41,12 +41,15 @@ class VideoProvider:
     wants_video = True
     wants_segment = False
 
-    def __init__(self) -> None:
+    def __init__(self, hr: float = 80.0, quality: float = 0.5) -> None:
         self.calls: list[tuple] = []
+        self.hr = hr
+        self.quality = quality
 
     def sample_video(self, video, t, ct="video/mp4"):
         self.calls.append((len(video), t, ct))
-        return PhysioSample(t=t, hr=80.0, rr=15.0, quality=0.5, face_count=1)
+        return PhysioSample(t=t, hr=self.hr, rr=15.0,
+                            quality=self.quality, face_count=1)
 
     def sample(self, frame, t):
         return None
@@ -238,6 +241,107 @@ class TestVideoChunk(PipelineCase):
         await self.hub.on_video_chunk("eA==", 30.0)
         self.assertIn("status", self.iws.types())
         self.assertFalse(self.hub.video_busy, "出错后必须解开 busy 闸门")
+
+
+class TestTriggerConfirm(PipelineCase):
+    """行为触发 → 生理确认。免费信号决定何时花钱，花钱的结果才能出提示。"""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.vp = VideoProvider()
+        ws_mod.PROVIDER = self.vp
+        self._orig_confirm_max = config.CONFIRM_MAX
+
+    async def asyncTearDown(self) -> None:
+        config.CONFIRM_MAX = self._orig_confirm_max
+        await super().asyncTearDown()
+
+    async def _ready_baseline(self, hr: float = 80.0) -> None:
+        # 三条样本：hr-1 / hr / hr+1 → median=hr, mad=1，正好够 MIN_SAMPLES=3
+        for t, h in ((0.0, hr - 1), (5.0, hr), (9.0, hr + 1)):
+            await self.hub._emit_sample(
+                PhysioSample(t=t, hr=h, rr=16.0, quality=0.6, face_count=1), t)
+        self.hub.room.baseline.freeze()
+        self.assertTrue(self.hub.room.baseline.ready)
+
+    async def test_high_pause_requests_clip(self):
+        STORE.start_session(self.room, consent=True)
+        await self.hub.on_turn_start(0.0)
+        await self.hub.on_turn_end(20.0, "x" * 30, {"pause_ratio": 0.8})
+
+        req = [m for m in self.cws.msgs if m["type"] == "record_request"]
+        self.assertEqual(len(req), 1, "行为异常就应该请求一段确认视频")
+        self.assertGreaterEqual(req[0]["seconds"], 15,
+                                "低于 15 秒接口不认")
+        self.assertIn("confirm_requested", self.iws.types(),
+                      "面试官应知道正在取证")
+
+    async def test_normal_turn_does_not_spend_money(self):
+        STORE.start_session(self.room, consent=True)
+        await self.hub.on_turn_start(0.0)
+        await self.hub.on_turn_end(20.0, "x" * 30,
+                                   {"pause_ratio": 0.05, "gaze_off": 0.0})
+        self.assertEqual([m for m in self.cws.msgs
+                          if m["type"] == "record_request"], [],
+                         "正常轮次绝不能花钱采样")
+
+    async def test_budget_cap(self):
+        config.CONFIRM_MAX = 1
+        STORE.start_session(self.room, consent=True)
+        await self.hub.on_turn_start(0.0)
+        await self.hub.on_turn_end(20.0, "x" * 30, {"pause_ratio": 0.8})
+        self.hub.pending = None          # 模拟这一段没回来
+        await self.hub.on_turn_start(30.0)
+        await self.hub.on_turn_end(60.0, "x" * 30, {"pause_ratio": 0.8})
+
+        req = [m for m in self.cws.msgs if m["type"] == "record_request"]
+        self.assertEqual(len(req), 1, f"本场额度 {config.CONFIRM_MAX}，不该发第二次")
+
+    async def test_confirmation_emits_hint_when_phys_confirms(self):
+        STORE.start_session(self.room, consent=True)
+        await self._ready_baseline(hr=80.0)
+        await self.hub.on_turn_start(120.0)
+        await self.hub.on_turn_end(150.0, "x" * 30, {"pause_ratio": 0.8})
+        self.assertIsNotNone(self.hub.pending)
+
+        # 证据回来：心率明显高于基线
+        ws_mod.PROVIDER = VideoProvider(hr=96.0)
+        await self.hub.on_video_chunk("eA==", 170.0)
+
+        hints = [m for m in self.iws.msgs if m["type"] == "hint"]
+        self.assertEqual(len(hints), 1, "行为 + 生理都异常，应该出提示")
+        self.assertTrue(hints[0]["confirmed"])
+        self.assertIn("σ", hints[0]["why"])
+        self.assertIsNone(self.hub.pending, "确认完必须清掉 pending")
+
+    async def test_confirmation_silent_when_phys_normal(self):
+        STORE.start_session(self.room, consent=True)
+        await self._ready_baseline(hr=80.0)
+        await self.hub.on_turn_start(120.0)
+        await self.hub.on_turn_end(150.0, "x" * 30, {"pause_ratio": 0.8})
+
+        # 证据回来：心率跟基线一样，生理侧没确认上
+        ws_mod.PROVIDER = VideoProvider(hr=80.5)
+        await self.hub.on_video_chunk("eA==", 170.0)
+
+        self.assertEqual([m for m in self.iws.msgs if m["type"] == "hint"], [],
+                         "生理没确认上就不许出提示（双确认不可破）")
+        res = [m for m in self.iws.msgs if m["type"] == "confirm_result"]
+        self.assertEqual(len(res), 1)
+        self.assertFalse(res[0]["confirmed"])
+
+    async def test_pending_timeout_does_not_block_forever(self):
+        STORE.start_session(self.room, consent=True)
+        await self.hub.on_turn_start(0.0)
+        await self.hub.on_turn_end(20.0, "x" * 30, {"pause_ratio": 0.8})
+        self.assertIsNotNone(self.hub.pending)
+
+        # 很久之后又触发一次：旧 pending 应作废，允许重新请求
+        config.CONFIRM_MAX = 5
+        await self.hub.on_turn_start(300.0)
+        await self.hub.on_turn_end(320.0, "x" * 30, {"pause_ratio": 0.8})
+        req = [m for m in self.cws.msgs if m["type"] == "record_request"]
+        self.assertEqual(len(req), 2, "超时的证据请求不该永久卡住下一次")
 
 
 if __name__ == "__main__":

@@ -166,6 +166,33 @@ class Baseline:
         return 0.6 * z_hr + 0.4 * z_rr
 
 
+# ---------------------------------------------------------------- 触发
+@dataclass
+class Trigger:
+    """行为信号触发的结论。不花钱，随时可以算。"""
+    fired: bool
+    score: float
+    reason: str
+
+
+def evaluate_trigger(beh: Behavior, threshold: Optional[float] = None,
+                     strong: Optional[float] = None) -> Trigger:
+    """判断这一轮的行为信号是否值得花钱去采一次生理数据。
+
+    思路：行为信号（停顿、语速、视线）由 STT/视觉免费得到，生理信号一个
+    20 秒片段要 17 万 token。所以用免费的信号决定"什么时候值得花钱"。
+    注意这只是**请求证据**，不是结论 —— 证据回来还要过双确认才允许出提示。
+    """
+    threshold = config.TRIGGER_THRESHOLD if threshold is None else threshold
+    strong = config.TRIGGER_STRONG if strong is None else strong
+
+    score = beh.anomaly()
+    # 单通道极强也算触发（比如停顿占比 0.8），不能被平均稀释掉
+    hard = max(beh.pause_ratio, beh.gaze_off,
+               beh.speech_rate_drop) >= strong
+    return Trigger(bool(score >= threshold or hard), score, beh.top_reason())
+
+
 # ---------------------------------------------------------------- 提示模板
 # 确定性选择：同一个 turn_id 永远出同一条，demo 才能排练。
 TEMPLATES: dict[str, list[str]] = {

@@ -89,6 +89,15 @@ BEHAVIOR_THRESHOLD = _f("BEHAVIOR_THRESHOLD", 0.5)  # 行为异常分 0..1
 QUIET_THRESHOLD = _f("QUIET_THRESHOLD", -0.5)    # 负荷"过低"（题太浅）
 HINT_COOLDOWN = _f("HINT_COOLDOWN", 30.0)        # 两条提示最小间隔（秒）
 
+# ---------- 触发 / 确认（行为触发、生理确认）----------
+# 行为信号免费（STT 就能拿到），生理信号一个片段 17 万 token。
+# 所以不持续采样，只在行为信号报警时花一次钱去确认。
+TRIGGER_THRESHOLD = _f("TRIGGER_THRESHOLD", 0.55)  # 行为异常分达到就请求确认
+TRIGGER_STRONG = _f("TRIGGER_STRONG", 0.75)        # 单通道达到这个值直接硬触发
+CONFIRM_MAX = _i("CONFIRM_MAX", 5)                 # 每场最多请求几段确认视频（省钱闸门）
+CONFIRM_CLIP_SECONDS = _i("CONFIRM_CLIP_SECONDS", 20)  # 每次请求录多长（必须 >=15）
+PENDING_TIMEOUT = _f("PENDING_TIMEOUT", 90.0)      # 请求后多久没回来就作废
+
 # ---------- 报告 ----------
 REPORT_MAX_POINTS = _i("REPORT_MAX_POINTS", 3)
 LLM_ENABLED = os.getenv("LLM_ENABLED", "0") == "1"

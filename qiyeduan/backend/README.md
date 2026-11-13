@@ -87,6 +87,7 @@ worker 泄漏、候选人未授权却仍在分析。`test_vision_http.py` 盯厂
 | `frame` | `t`, `img`(dataURL) | 5fps，建议 320px 宽、JPEG 0.6 |
 | `turn_start` | `t` | 开始回答 |
 | `turn_end` | `t`, `transcript`, `beh{}` | 结束回答，`beh` 见下 |
+| `video_chunk` | `t`, `data`(base64), `ct` | 视频形态：录一段视频发上来（`record_request` 之后） |
 | `end` | `t` | 结束整场 |
 
 `beh` 四个字段全部归一化到 0..1：`pause_ratio` / `filler_density` / `speech_rate_drop` / `gaze_off`。
@@ -98,7 +99,9 @@ worker 泄漏、候选人未授权却仍在分析。`test_vision_http.py` 盯厂
 |---|---|
 | `signal` | 每 ~2s 一条：`t, load_z, hr, quality, face_count, baseline_ready, baseline_remaining` |
 | `turn_summary` | 轮次结算：`phys_peak, phys_mean, beh_anomaly` |
-| `hint` | **核心**：`id, kind(probe\|upgrade\|wrap), text, why, t` |
+| `hint` | **核心**：`id, kind(probe\|upgrade\|wrap), text, why, t, confirmed?` |
+| `confirm_requested` | 行为报警了，正在取证：`turn_id, reason, used, budget` |
+| `confirm_result` | 取证回来但生理没确认上：`confirmed:false, load_z, quality` |
 | `hint_ack` | 反馈回执：`action, adopt_rate` |
 | `peer` | 对端上线/下线 |
 | `status` | `degraded` 降级通知 |
@@ -216,25 +219,40 @@ x-signature = base64(HMAC_SHA256(secret_key, timestamp))
 → `POST /api/v3/video/process` `{objectKey, capability:"rppg"}`。
 返回 `data.cardiac.{hr, sqi, hrv}`、`data.breathing_rate`、`data.tokens_deducted`。
 
-**四个必须知道的约束**：
-
-1. **采样下限 15 秒，最好 30 秒。** 一个视频块换一个采样点，不可能"每 2 秒一个点"。
-   所以提示节奏从「每轮」变成「每 30 秒」。`wrap`（连续两轮高负荷）逻辑仍然成立，
-   但 `probe` 的响应会慢一个块（约 30 秒 + 处理时间）。
-2. **`User-Agent` 必须伪装成浏览器。** FacePhys 挂在 Cloudflare 后面，默认的
-   `Python-urllib/3.x` 会被 WAF 直接 403，响应体是 `error code: 1010`。
-   看起来像签名错，其实跟签名没关系——`BROWSER_UA` 常量钉住了这一点。
-3. **`sqi` 阈值是 0.30，不是 0.5。** 官方文档：`sqi >= 0.30` 即可用。实测两段视频
-   的 sqi 只有 0.31 / 0.38，沿用默认 `MIN_QUALITY=0.5` 会把全部有效数据丢掉。
-   视频形态必须设 `MIN_QUALITY=0.25`。
-4. **基线要少采几个点。** 60 秒基线在视频形态下只有 2 个采样，`BASELINE_MIN_SAMPLES=8`
-   永远不满足。视频形态建议 `BASELINE_SECONDS=60` + `BASELINE_MIN_SAMPLES=2`。
-
-候选人侧要配合的地方：浏览器用 `MediaRecorder` 每 ~30 秒切一段，走
-`{"type":"video_chunk","t":<秒>,"data":"<base64>","ct":"video/webm"}` 发上来。
+候选人侧要配合的：监听 `record_request` → 录 `seconds` 秒 → 发 `video_chunk`。
+参考实现 `static/dev_recorder.html`（访问 `/recorder`）。**必须用 `stop()` → `start()`
+循环，不能用 `timeslice`**，否则切出来的第 2 段起都无法独立解码。
 格式支持 MP4 / MOV / AVI / WebM，分辨率 ≥ 640×480，正面人脸占画面 20% 以上。
 
+### 触发 → 确认（这是省钱的核心架构）
 
+```
+每个回答结束
+   ↓  行为特征（停顿/语速/视线）—— STT 就能拿到，免费
+evaluate_trigger()  ── 不报警 ──→ 什么都不做（绝大多数轮次走这里）
+   ↓ 报警
+record_request → 候选人录 20 秒 → video_chunk
+   ↓ FacePhys 处理 9~17 秒，扣约 17 万 token
+命中基线 → load_z ── 不够 ──→ confirm_result{confirmed:false}（明确说"没证实"）
+   ↓ 够
+hint（confirmed:true，why 里同时写生理和行为证据）
+```
+
+**为什么必须这么设计**：行为信号免费，生理片段一次 17 万 token。
+一场 45 分钟面试如果固定每 30 秒采一次，要 90 段 = **1575 万 token**，是额度的十几倍。
+按需取证把一场降到 3~5 段，成本降低 20 倍，而且更贴合真实使用——
+面试官只在少数关键处需要证据，不需要全程体温表。
+
+**三个闸门，一个都不能少**：
+
+1. `TRIGGER_THRESHOLD`（0.55）/ `TRIGGER_STRONG`（0.75，单通道硬触发）—— 决定要不要花钱。
+2. `CONFIRM_MAX`（默认 5）—— 每场最多花几次，超了不再请求。
+3. **双确认仍然生效** —— 生理没确认上就不出提示，只回 `confirm_result`。
+   **"没证实"也要告诉面试官**，这比沉默更诚实，也是产品可信度的来源。
+
+`PENDING_TIMEOUT`（90 秒）保证一次失败的取证不会永久卡住后续触发。
+
+### 第 2 步：字段名对不上就配环境变量
 
 默认已经覆盖最常见的几十种命名（`data.heart_rate` / `hr` / `result.physio.bpm` …），
 命不中就用 `|` 分隔多个候选路径：
