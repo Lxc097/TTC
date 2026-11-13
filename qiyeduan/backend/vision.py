@@ -1,9 +1,14 @@
-"""视觉/生理数据来源。
+"""视觉/生理数据来源的选择器。
 
 上层只认 VisionProvider 这一个协议，所以：
 - 前端没接好时用 MockProvider，立刻能联调
 - demo 现场 API 挂了，VISION_PROVIDER=mock 一键切换，不丢人
-- 真实 API 只需要实现 sample() 一个方法
+- 真实 API 的适配全部在 vision_http.py，这里只负责挑实现
+
+接口约定（很重要，别改）：
+    返回 PhysioSample  → 「我说了，这是数据」（quality=0 表示画面里没人/信号差）
+    返回 None          → 「我这次没什么可说的」，上层必须忽略，不要当成采样
+这个区分是为了防止「没数据」被误当成「没心跳」而污染基线。
 """
 from __future__ import annotations
 
@@ -16,8 +21,15 @@ from engine import PhysioSample
 
 
 class VisionProvider(Protocol):
-    def sample(self, frame: Optional[bytes], t: float) -> PhysioSample:
+    wants_segment: bool
+
+    def sample(self, frame: Optional[bytes], t: float) -> Optional[PhysioSample]:
         """给一帧（可为 None），返回这一时刻的生理采样。t = 相对面试开始秒数。"""
+        ...
+
+    def sample_segment(self, frames: list[bytes],
+                       t: float) -> Optional[PhysioSample]:
+        """片段形态用：给一段连续帧。默认退化为取最后一帧。"""
         ...
 
 
@@ -27,6 +39,8 @@ class MockProvider:
     默认在 MOCK_STRESS_WINDOWS 指定的时间段抬高心率，
     让 demo 的"负荷突升"能稳定复现——**排练过的 demo 才是可信的 demo**。
     """
+
+    wants_segment = False
 
     BASE_HR = 72.0
     BASE_RR = 15.0
@@ -52,7 +66,7 @@ class MockProvider:
     def _in_stress(self, t: float) -> bool:
         return any(a <= t <= b for a, b in self.windows)
 
-    def sample(self, frame: Optional[bytes], t: float) -> PhysioSample:
+    def sample(self, frame: Optional[bytes], t: float) -> Optional[PhysioSample]:
         if frame is None:
             # 没有画面 = 没有人脸，数据不可用
             return PhysioSample(t=t, hr=None, rr=None, quality=0.0, face_count=0)
@@ -67,60 +81,19 @@ class MockProvider:
         return PhysioSample(t=t, hr=round(hr, 1), rr=round(rr, 1),
                             quality=max(0.1, quality), face_count=1)
 
-
-class RealProvider:
-    """对接团队现有的云端人脸/生理 API。
-
-    TODO 上线前必须填这里。注意三件事：
-    1. 这是同步 HTTP 调用，必须放在 asyncio.to_thread 里跑（见 ws.py），
-       否则会卡死整个事件循环，提示延迟直接爆掉。
-    2. 只取需要的字段，别把原始响应透传给前端（合规 + 体积）。
-    3. 拿不到 quality 时一律当作 0，宁可静默不可误报。
-    """
-
-    def __init__(self, endpoint: str = "", api_key: str = "") -> None:
-        self.endpoint = endpoint or os.getenv("VISION_API_URL", "")
-        self.api_key = api_key or os.getenv("VISION_API_KEY", "")
-        if not self.endpoint:
-            raise RuntimeError("VISION_API_URL 未配置，或改用 VISION_PROVIDER=mock")
-
-    def _post(self, frame: bytes) -> dict:  # pragma: no cover - 需真实网络
-        import urllib.request
-        import json
-
-        req = urllib.request.Request(
-            self.endpoint,
-            data=frame,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/octet-stream",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-
-    def sample(self, frame: Optional[bytes], t: float) -> PhysioSample:
-        if not frame:
-            return PhysioSample(t=t, quality=0.0, face_count=0)
-        try:
-            data = self._post(frame)
-        except Exception:
-            # 超时/报错一律降级为"本点无数据"，绝不抛给上层
-            return PhysioSample(t=t, quality=0.0, face_count=0)
-
-        n_faces = int(data.get("face_count", 0) or 0)
-        return PhysioSample(
-            t=t,
-            hr=data.get("heart_rate"),
-            rr=data.get("breath_rate"),
-            quality=float(data.get("quality", 0.0) or 0.0),
-            face_count=n_faces,
-        )
+    def sample_segment(self, frames: list[bytes],
+                       t: float) -> Optional[PhysioSample]:
+        return self.sample(frames[-1] if frames else None, t)
 
 
 def get_provider() -> VisionProvider:
     """按环境变量选择实现。整个后端只在这里 new 一次。"""
     if config.VISION_PROVIDER == "real":
-        return RealProvider()
+        from vision_http import HttpVisionProvider   # 延迟导入，mock 模式不需要它
+        return HttpVisionProvider()
     return MockProvider()
+
+
+# 兼容旧引用
+def _alias() -> None:  # pragma: no cover
+    from vision_http import HttpVisionProvider as RealProvider  # noqa: F401

@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
+from collections import deque
 from typing import Any
 
 import config
@@ -22,6 +24,12 @@ from store import STORE, Room, Session
 from vision import get_provider
 
 PROVIDER = get_provider()
+
+# 片段形态（VISION_API_MODE=segment）时，必须保留连续帧给 rPPG 用，
+# 不能沿用「只保留最新一帧」的背压，否则视频被打散成每 2 秒一帧。
+SEGMENT_MODE = bool(getattr(PROVIDER, "wants_segment", False))
+SEGMENT_FRAMES = max(10, int(float(os.getenv("VISION_SEGMENT_SECONDS", "12"))
+                            * config.FRAME_FPS))
 
 # 每个房间一个 Hub（连接集合 + 单帧槽位 + 后台 worker）
 HUBS: dict[str, "RoomHub"] = {}
@@ -36,6 +44,7 @@ class RoomHub:
         self.latest_t: float = 0.0
         self.worker: asyncio.Task | None = None
         self.consent_warned = False
+        self.seg_buffer: deque[bytes] = deque(maxlen=SEGMENT_FRAMES)
 
     # ---------------- 连接管理 ----------------
     def add(self, role: str, ws) -> None:
@@ -85,6 +94,8 @@ class RoomHub:
     def push_frame(self, frame: bytes, t: float) -> None:
         self.latest_frame = frame      # 覆盖，不排队
         self.latest_t = t
+        if SEGMENT_MODE:
+            self.seg_buffer.append(frame)   # 片段形态必须保留连续帧
         self.frame_ready.set()         # 通知 worker 有新帧
 
     # ---------------- 后台视觉 worker ----------------
@@ -117,12 +128,23 @@ class RoomHub:
                 continue
 
             try:
-                sample = await asyncio.to_thread(PROVIDER.sample, frame, t)
+                if SEGMENT_MODE:
+                    # 片段形态：送连续帧，不能用只保留最新一帧的背压，
+                    # 否则每 2 秒才喂一帧，视频断裂，rPPG 算不出心率。
+                    sample = await asyncio.to_thread(
+                        PROVIDER.sample_segment, list(self.seg_buffer), t)
+                else:
+                    sample = await asyncio.to_thread(PROVIDER.sample, frame, t)
             except Exception:
                 # API 挂了：降级但不中断
                 await self.send("interviewer",
                                 {"type": "status", "state": "degraded",
                                  "reason": "vision_api_error", "t": t})
+                await asyncio.sleep(config.SAMPLE_MIN_INTERVAL)
+                continue
+
+            if sample is None:
+                # 这一次没什么可说的，忽略它 —— 绝不能当成"没人脸"采样
                 await asyncio.sleep(config.SAMPLE_MIN_INTERVAL)
                 continue
 
