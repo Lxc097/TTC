@@ -31,3 +31,7 @@ venv/
 *.dll
 *.pdb
 target/
+
+# 带真实密钥的交接文档，永不提交
+*.local.md
+
