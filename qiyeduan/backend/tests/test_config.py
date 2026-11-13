@@ -63,22 +63,31 @@ class TestLoadDotenv(unittest.TestCase):
         config._load_dotenv(Path(__file__).with_name("__no_such__.env"))
 
     def test_real_env_wins(self):
+        """shell 里 set 过的变量不能被 .env 覆盖，否则现场无法临时切换数据源。
+
+        用纯函数验证，不落任何文件 —— 只读环境（如沙箱/CI）里也能跑。
+        """
         key = "TTC_TEST_ENV_PRIORITY"
         old = os.environ.get(key)
         os.environ[key] = "from_shell"
         try:
-            p = Path(__file__).with_name("__tmp_priority__.env")
-            p.write_text(f"{key}=from_file\n", encoding="utf-8")
-            try:
-                config._load_dotenv(p)
-                self.assertEqual(os.environ[key], "from_shell",
-                                 "shell 环境变量必须优先，否则现场无法临时覆盖")
-            finally:
-                p.unlink(missing_ok=True)
+            config._apply_dotenv(f"{key}=from_file\n")
+            self.assertEqual(os.environ[key], "from_shell")
         finally:
             if old is None:
                 os.environ.pop(key, None)
             else:
+                os.environ[key] = old
+
+    def test_apply_sets_missing_keys(self):
+        key = "TTC_TEST_APPLY"
+        old = os.environ.pop(key, None)
+        try:
+            config._apply_dotenv(f"{key}=hello\nOTHER=1\n")
+            self.assertEqual(os.environ[key], "hello")
+            os.environ.pop("OTHER", None)
+        finally:
+            if old is not None:
                 os.environ[key] = old
 
 

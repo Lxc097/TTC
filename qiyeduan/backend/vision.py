@@ -85,11 +85,6 @@ class MockProvider:
                        t: float) -> Optional[PhysioSample]:
         return self.sample(frames[-1] if frames else None, t)
 
-    def sample_video(self, video: bytes, t: float,
-                     content_type: str = "video/webm") -> Optional[PhysioSample]:
-        # mock 视频形态：把视频当一帧处理，走同一个可排练的心率模型。
-        return self.sample(video or b"mock-video", t)
-
 
 def get_provider() -> VisionProvider:
     """按环境变量选择实现。整个后端只在这里 new 一次。

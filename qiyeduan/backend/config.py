@@ -30,18 +30,23 @@ def _parse_dotenv(text: str) -> dict[str, str]:
     return out
 
 
+def _apply_dotenv(text: str) -> None:
+    """把 .env 文本写进环境变量。**真实环境变量优先**（setdefault）。
+
+    拆成纯函数是为了可测：不用真的落一个文件，任何环境（包括只读沙箱）都能跑。
+    """
+    for k, v in _parse_dotenv(text).items():
+        os.environ.setdefault(k, v)
+
+
 def _load_dotenv(path: Path) -> None:
     """极简 .env 加载，不引入 python-dotenv 依赖。
-
-    **真实环境变量优先**（set 过的不会被 .env 覆盖），
-    这样 demo 现场用 set VISION_PROVIDER=mock 临时切换不会失效。
 
     密钥只放 .env，.env 已被 .gitignore 排除 —— 永远不要让密钥进仓库。
     """
     if not path.exists():
         return
-    for k, v in _parse_dotenv(path.read_text(encoding="utf-8")).items():
-        os.environ.setdefault(k, v)
+    _apply_dotenv(path.read_text(encoding="utf-8"))
 
 
 # 测试/CI 里设 TTC_SKIP_DOTENV=1，避免开发者本地 .env 影响测试结果
