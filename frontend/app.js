@@ -32,6 +32,40 @@ function toast(msg) {
   later(() => el.remove(), 2200);
 }
 
+
+/* ---------- backend bridge ---------- */
+const BE = { base: 'http://127.0.0.1:8000', ws: 'ws://127.0.0.1:8000' };
+async function apiJSON(path, opt) {
+  const res = await fetch(BE.base + path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opt));
+  if (!res.ok) throw new Error('API ' + res.status);
+  return res.json();
+}
+async function apiMaybe(path, opt) { try { return await apiJSON(path, opt); } catch (e) { return null; } }
+function fmtDate(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  if (isNaN(d.getTime())) return String(ts);
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+function fmtClock(t) { return fmtTs(t); }
+function bandView(m) {
+  let cls = 'xidle', pct = 26, note = '';
+  if (!m.baseline_ready) {
+    note = '建立基线中 ' + Math.max(0, Math.round(m.baseline_remaining || 0)) + 's';
+  } else if ((m.quality || 0) < 0.15) {
+    cls = 'xstriped'; pct = 14; note = '数据不可用 · 请调整摄像头';
+  } else {
+    const z = Number(m.load_z || 0);
+    if (z > 2.0) { cls = 'xred'; pct = Math.min(100, 46 + Math.round((z - 2) * 10)); note = '高负荷 · 建议追问'; }
+    else if (z > 1.5) { cls = 'xamber'; pct = Math.min(100, 34 + Math.round((z - 1.5) * 8)); note = '负荷升高 · 建议追问'; }
+    else if (z > 0.8) { cls = 'xblue'; pct = Math.min(100, 24 + Math.round((z - 0.8) * 6)); note = '负荷略升'; }
+    else { pct = 16 + Math.round(Math.max(0, z + 0.4) * 14); note = '分析中 · 信号稳定'; }
+  }
+  if (m.signal_weak && cls !== 'xstriped') note = '信号偏弱，仅供参考';
+  return { cls: cls, pct: pct, note: note };
+}
+
 /* ---------- icons (inline svg) ---------- */
 const I = {};
 const svg = (p) => '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + p + '</svg>';
@@ -220,10 +254,12 @@ routes['/candidate'] = {
   mount() {
     const input = $('#roomInput');
     const err = $('#roomErr');
-    const join = () => {
+    const join = async () => {
       const v = (input.value || '').trim().toUpperCase();
       if (!/^[A-Z0-9]{6}$/.test(v)) { err.textContent = '房间号无效：请输入 6 位字母或数字。'; return; }
-      err.textContent = '';
+      err.textContent = '校验房间号…';
+      const ok = await apiMaybe('/api/rooms/' + encodeURIComponent(v));
+      err.textContent = ok === null ? '后端未连接：按本地模式进入。' : '';
       location.hash = '#/candidate/room/' + v;
     };
     $('#joinBtn').addEventListener('click', join);
@@ -287,14 +323,15 @@ function showDeviceCheck(scene, roomId, audioOnly) {
     '<button class="btn btn-primary" id="enterBtn">' + I.video + ' 进入面试</button>' +
     '</div></div>';
   $('#backConsent').addEventListener('click', () => showConsent(scene, roomId, audioOnly));
-  $('#enterBtn').addEventListener('click', () => showCandidateLive(scene, audioOnly));
+  $('#enterBtn').addEventListener('click', () => showCandidateLive(scene, roomId, audioOnly));
 }
 
-function showCandidateLive(scene, audioOnly) {
+function showCandidateLive(scene, roomId, audioOnly) {
   let muted = false, camOff = audioOnly;
   let sec = 0;
+  let ended = false;
   const intercom = ['面试官已进入面试间。', '面试官：先请你做 2 分钟自我介绍。', '面试官：可以讲一个你最有代表性的项目。'];
-  let capi = 1;
+  let capi = 0;
   scene.innerHTML =
     '<div class="stage">' +
     '<div class="vid-fill"><div><div class="avatar">吴</div><div class="place-name">面试官 · 吴</div></div></div>' +
@@ -309,8 +346,107 @@ function showCandidateLive(scene, audioOnly) {
     '</div>' +
     '<p class="tiny muted" style="text-align:center;margin-top:10px;">本场只见普通视频面试：没有信号带，也没有提示卡。</p>';
 
-  later(() => { $('#statusTxt').textContent = '面试进行中'; }, 3000);
-  every(() => { $('#capTxt').textContent = intercom[capi % intercom.length]; capi++; }, 7000);
+  every(() => { sec++; }, 1000);
+  later(() => { const t = $('#statusTxt'); if (t && t.textContent.indexOf('已进入') < 0) t.textContent = '面试进行中'; }, 3000);
+  every(() => { const t = $('#capTxt'); if (t) t.textContent = intercom[capi % intercom.length]; capi++; }, 7000);
+
+  const consent = audioOnly ? 0 : 1;
+  let ws = null;
+  let canvas = null, ctx = null, video = null;
+  let stream = null, rec = null, recResolve = null, recChunks = [], recMime = '';
+  const MIME_CANDIDATES = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'];
+  function pickMime() {
+    for (const m of MIME_CANDIDATES) { try { if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; } catch (e) {} }
+    return '';
+  }
+  const blobToBase64 = blob => new Promise(resolve => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result || '').split(',')[1] || '');
+    r.onerror = () => resolve('');
+    r.readAsDataURL(blob);
+  });
+  function stopCam() {
+    try { if (rec && rec.state !== 'inactive') rec.stop(); } catch (e) {}
+    try { if (stream) stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    stream = null;
+  }
+  const connect = () => {
+    ws = new WebSocket(BE.ws + '/ws/room/' + encodeURIComponent(roomId) + '?role=candidate&consent=' + consent);
+    ws.onopen = () => startFrames();
+    ws.onmessage = ev => {
+      let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (m.type === 'peer' && m.role === 'interviewer') {
+        const t = $('#statusTxt');
+        if (t) t.textContent = m.state === 'online' ? '面试官已进入' : '等待面试官进入…';
+      }
+      if (m.type === 'report_ready') {
+        ended = true;
+        stopCam();
+        const rep = m.report || {};
+        saveSession({ id: m.session_id, role: 'candidate', title: rep.title || '真实面试', date: nowStr(), duration: fmtTs(rep.duration || sec), followUps: (rep.points || []).length, adoptRate: 1.0, deleted: false });
+        location.hash = '#/report/' + m.session_id;
+      }
+      if (m.type === 'record_request') {
+        handleRecordRequest(m);
+      }
+    };
+    ws.onclose = () => { if (!ended) { const t = $('#statusTxt'); if (t) t.textContent = '后端未连接 · 本地演示'; } };
+  };
+  async function startFrames() {
+    if (consent === 0) return;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, frameRate: 5 }, audio: false });
+      video = document.createElement('video');
+      video.srcObject = stream;
+      video.muted = true;
+      await video.play();
+      canvas = document.createElement('canvas');
+      canvas.width = 320; canvas.height = 240;
+      ctx = canvas.getContext('2d');
+    } catch (e) { canvas = null; ctx = null; stream = null; }
+    every(() => {
+      if (!ws || ws.readyState !== 1 || ended) return;
+      let img = '';
+      if (ctx) { try { ctx.drawImage(video, 0, 0, 320, 240); img = canvas.toDataURL('image/jpeg', 0.5); } catch (e) {} }
+      if (!img) img = 'data:image/jpeg;base64,' + btoa('mock-frame-' + sec + '-corgi');
+      ws.send(JSON.stringify({ type: 'frame', t: sec, img: img }));
+    }, 2000);
+  }
+  async function handleRecordRequest(m) {
+    const t = $('#statusTxt');
+    const seconds = m.seconds || 20;
+    if (rec && rec.state !== 'inactive') { if (t) t.textContent = '上一段仍在取证，本条已跳过'; return; }
+    if (t) t.textContent = '取证中：正录制 ' + seconds + ' 秒片段确认该轮表现';
+    try {
+      if (!stream) stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, frameRate: 30 }, audio: false });
+      recMime = pickMime();
+      if (!recMime) { if (t) t.textContent = '浏览器不支持录制，本段跳过'; return; }
+      recChunks = [];
+      rec = new MediaRecorder(stream, { mimeType: recMime, videoBitsPerSecond: 800000 });
+      rec.ondataavailable = e => { if (e.data && e.data.size) recChunks.push(e.data); };
+      rec.onstop = async () => { recResolve && recResolve(); };
+      rec.start();
+      await new Promise(resolve => {
+        recResolve = resolve;
+        setTimeout(() => { if (rec && rec.state !== 'inactive') rec.stop(); }, seconds * 1000);
+      });
+      const blob = recChunks.length ? new Blob(recChunks, { type: recMime.split(';')[0] || 'video/webm' }) : null;
+      rec = null; recChunks = []; recResolve = null;
+      if (!blob || !blob.size) { if (t) t.textContent = '取证片段为空，继续面试'; return; }
+      const data = await blobToBase64(blob);
+      if (ws && ws.readyState === 1 && !ended) {
+        ws.send(JSON.stringify({ type: 'video_chunk', t: (m.t || sec + Number(seconds)) + Number(seconds), data: data, ct: recMime.split(';')[0] || 'video/webm' }));
+      }
+      if (t) t.textContent = '该轮表现已确认，面试继续';
+    } catch (e) { if (t) t.textContent = '取证失败：' + (e && e.name ? e.name : '权限'); }
+  }
+  connect();
+
+  const send = o => { if (ws && ws.readyState === 1 && !ended) ws.send(JSON.stringify(o)); };
+  later(() => send({ type: 'turn_start', t: 15, turn_id: 1 }), 15000);
+  later(() => send({ type: 'turn_end', t: 40, turn_id: 1, transcript: '我先做个自我介绍，主要做前端。', beh: { pause_ratio: 0.3, filler_density: 0.2, speech_rate_drop: 0.1, gaze_off: 0.1 } }), 40000);
+  later(() => send({ type: 'turn_start', t: 70, turn_id: 2 }), 70000);
+  later(() => send({ type: 'turn_end', t: 95, turn_id: 2, transcript: '这个项目的难点主要性能，我们从八百压到一万二。', beh: { pause_ratio: 0.8, filler_density: 0.25, speech_rate_drop: 0.15, gaze_off: 0.1 } }), 95000);
 
   $('#muteBtn').addEventListener('click', () => {
     muted = !muted;
@@ -324,7 +460,10 @@ function showCandidateLive(scene, audioOnly) {
     $('#pip').innerHTML = camOff ? '<div class="place-name" style="margin:0;">摄像头已关</div>' : '<div class="avatar">我</div>';
   });
   $('#endBtn').addEventListener('click', () => {
-    saveSession({ id: 'C' + Date.now().toString().slice(-8), role: 'candidate', title: '真实面试 · 前端工程师', date: nowStr(), duration: fmtTs(sec), followUps: 3, adoptRate: 0.67, deleted: false });
+    ended = true;
+    stopCam();
+    if (ws && ws.readyState === 1) { try { ws.close(); } catch (e) {} }
+    toast('你已退出面试');
     location.hash = '#/candidate';
   });
 }
@@ -441,8 +580,14 @@ routes['/interviewer'] = {
       '</main>' + footerHtml();
   },
   mount() {
-    $('#createBtn').addEventListener('click', () => {
-      const code = genCode();
+    $('#createBtn').addEventListener('click', async () => {
+      const btn = $('#createBtn');
+      btn.disabled = true;
+      btn.innerHTML = '创建中…';
+      const room = await apiMaybe('/api/rooms', { method: 'POST', body: JSON.stringify({ job_title: '前端工程师' }) });
+      btn.disabled = false;
+      btn.innerHTML = I.spark + ' 创建房间';
+      const code = room && room.code ? room.code : genCode();
       LS.set('corgi_room', { code, created: nowStr() });
       location.hash = '#/interviewer/room/' + code;
     });
@@ -459,20 +604,17 @@ const CANDIDATE_LINES = [
   '遇到冲突，我们一般先对齐目标再一起解决。',
   '最后上线后的留存提升了大概十个百分点。'
 ];
-const CUES = [
-  { text: '追问“我们”是谁', why: '候选人用人称“我们”带过关键贡献，需要确认其个人角色与边界。' },
-  { text: '追问数字口径', why: '“一万二 QPS”与简历口径不一致，需确认峰值、均值与压测条件。' },
-  { text: '追问冲突结果', why: '两次回答都在“一起解决”处结束，缺少候选人的具体动作与结果。' },
-  { text: '追问项目角色', why: '叙述以团队为视角，未说明候选人从 0 到 1 的实际贡献。' }
-];
+const KIND_TITLE = { probe: '⚠ 追问', upgrade: '↑ 加难度', wrap: '○ 收一下' };
 
 routes['/interviewer/room/:id'] = {
   key: 'interviewerRoom',
   render(p) {
+    const joinUrl = location.origin + location.pathname + '#/candidate/room/' + esc(p.id);
     return navHtml('interviewer') +
       '<main class="wrap page fade-in">' +
       '<div class="row-between"><div><h1 style="font-size:28px;">面试中</h1>' +
-      '<p class="panel-sub mt-8">房间 ' + esc(p.id) + ' · <span id="timer">00:00</span></p></div>' +
+      '<p class="panel-sub mt-8">房间 ' + esc(p.id) + ' · <span id="timer">00:00</span></p>' +
+      '<p class="tiny muted mt-8">候选人入口：<code>' + esc(joinUrl) + '</code> <button class="btn btn-ghost btn-sm" id="copyLinkBtn">' + I.copy + ' 复制链接</button></p></div>' +
       '<div class="row"><span class="chip peach" id="adoptChip">采纳 0</span><span class="chip gray" id="ignoreChip">忽略 0</span>' +
       '<button class="btn btn-danger" id="endIntBtn">' + I.phone + ' 结束面试</button></div></div>' +
       '<div class="grid-2 mt-16" style="align-items:start;">' +
@@ -483,7 +625,7 @@ routes['/interviewer/room/:id'] = {
       '<p class="tiny muted">隐私提示：本场信号与提示卡仅同步给当场面官本人，不写入候选人可见画面。</p>' +
       '</div>' +
       '<div class="stack">' +
-      '<div class="signal-band"><div class="signal-head"><b>候选人情信号（实时）</b><span class="tiny muted">无数字 · 仅面官可见</span></div>' +
+      '<div class="signal-band" id="signalBand"><div class="signal-head"><b>候选人情信号（实时）</b><span class="tiny muted">无数字 · 仅面官可见</span><span class="tiny muted" id="bandNote" style="margin-left:auto;">连接中…</span></div>' +
       '<div class="signal-lanes">' +
       lane('语速', 'l1', '40') + lane('停顿', 'l2', '45') + lane('表情', 'l3', '35') + lane('眼神', 'l4', '30') +
       '</div></div>' +
@@ -492,39 +634,33 @@ routes['/interviewer/room/:id'] = {
       '</main>' + footerHtml();
   },
   mount(p) {
-    let sec = 0, capi = 0, cuei = 0, adopt = 0, ignore = 0;
-    every(() => { sec++; $('#timer').textContent = fmtTs(sec); }, 1000);
-    every(() => {
-      $('#intCap').textContent = CANDIDATE_LINES[capi % CANDIDATE_LINES.length]; capi++;
-    }, 5000);
-    every(() => {
-      $$('#intStage .signal-lane i').forEach((bar, i) => {
-        const move = b => Math.max(12, Math.min(100, b + Math.round((Math.random() - 0.5) * 40)));
-        const cur = parseInt(bar.style.width || bar.getAttribute('data-w'), 10);
-        bar.style.width = move(cur) + '%'; bar.setAttribute('data-w', move(cur));
-      });
-    }, 2600);
-    later(() => { $('#intStatus').textContent = '候选人已进入'; }, 2500);
-    const cue = () => {
-      const item = CUES[cuei % CUES.length]; cuei++;
-      $('#cueWrap').innerHTML =
-        '<div class="cue" id="cueFull"><div class="cue-text">' + I.bulb + ' ' + esc(item.text) + ' <span class="tiny muted">(≤10 字)</span></div>' +
-        '<div style="margin-top:6px;"><button class="btn btn-sm btn-soft" id="whyBtn">为什么</button></div>' +
-        '<div class="cue-actions"><button class="btn btn-sm btn-primary" id="useBtn">用掉</button>' +
-        '<button class="btn btn-sm btn-ghost" id="ignoreCueBtn">忽略</button></div></div>';
-      $('#whyBtn').addEventListener('click', () => toggleWhy(item));
-      $('#useBtn').addEventListener('click', () => { adopt++; $('#adoptChip').textContent = '采纳 ' + adopt; mini(); });
-      $('#ignoreCueBtn').addEventListener('click', () => { ignore++; $('#ignoreChip').textContent = '忽略 ' + ignore; mini(); });
-      const mini = () => {
-        $('#cueWrap').innerHTML = '<div class="cue mini" id="cueMini">' + I.bulb + '<span>' + esc(item.text) + '</span>' + I.chev + '</div>';
-        $('#cueMini').addEventListener('click', () => { $('#cueWrap').innerHTML = cueFullHtml(item); wireFull(item, adopt, ignore); });
-      };
-      later(mini, 3000);
-    };
-    later(cue, 3200);
+    const state = { code: p.id, sec: 0, capi: 0, adopt: 0, ignore: 0, cues: [], ws: null, ended: false, hasSignal: false };
+    window.__corgiJob = '前端工程师';
+    every(() => { state.sec++; $('#timer').textContent = fmtTs(state.sec); }, 1000);
+    every(() => { $('#intCap').textContent = CANDIDATE_LINES[state.capi % CANDIDATE_LINES.length]; state.capi++; }, 5000);
+    every(() => { if (!state.hasSignal) demoTaint(); }, 2600);
+    connectInterviewer(state);
+    $('#copyLinkBtn').addEventListener('click', () => {
+      const url = location.origin + location.pathname + '#/candidate/room/' + state.code;
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(() => toast('链接已复制'), () => toast('复制失败'));
+      else toast('复制失败：浏览器不支持');
+    });
     $('#endIntBtn').addEventListener('click', () => {
-      const s = saveSession({ id: 'R' + Date.now().toString().slice(-8), role: 'interviewer', title: '前端工程师', date: nowStr(), duration: fmtTs(sec), followUps: 3, adoptRate: denyZero(adopt + ignore, adopt), deleted: false });
-      location.hash = '#/report/' + s.id;
+      state.ended = true;
+      const fallbackReport = () => {
+        const sid = 'R' + Date.now().toString().slice(-8);
+        saveSession({ id: sid, role: 'interviewer', title: window.__corgiJob || '前端工程师', date: nowStr(), duration: fmtTs(state.sec), followUps: state.adopt, adoptRate: denyZero(state.adopt + state.ignore, state.adopt), deleted: false });
+        location.hash = '#/report/' + sid;
+      };
+      if (state.ws && state.ws.readyState === 1) {
+        state.ws.send(JSON.stringify({ type: 'end' }));
+        later(() => { if (!state.reported) fallbackReport(); }, 3000);
+      } else {
+        apiMaybe('/api/rooms/' + encodeURIComponent(state.code) + '/end', { method: 'POST' }).then(r => {
+          if (r && r.session_id) location.hash = '#/report/' + r.session_id;
+          else fallbackReport();
+        }).catch(fallbackReport);
+      }
     });
     const sw = $('#switchRole'); if (sw) sw.addEventListener('click', () => { LS.del('corgi_role'); location.hash = '#/'; render(); });
   }
@@ -533,53 +669,239 @@ function denyZero(total, n) { return total === 0 ? 0 : Number((n / total).toFixe
 function lane(lab, cls, w) {
   return '<div class="signal-lane"><span class="lab">' + lab + '</span><div class="bar"><i class="' + cls + '" data-w="' + w + '" style="width:' + w + '%"></i></div></div>';
 }
-
-function toggleWhy(item) {
-  const full = $('#cueFull'); if (!full) return;
-  const has = $('#whyBox');
-  if (has) { has.remove(); return; }
-  const d = document.createElement('div'); d.id = 'whyBox'; d.className = 'cue-why';
-  d.textContent = '为什么提这个？' + item.why;
-  full.querySelector('.cue-actions').before(d);
+function demoTaint() {
+  $$('#signalBand .signal-lane i').forEach(bar => {
+    const cur = parseInt(bar.style.width || bar.getAttribute('data-w'), 10);
+    const next = Math.max(12, Math.min(100, cur + Math.round((Math.random() - 0.5) * 40)));
+    bar.style.width = next + '%';
+    bar.setAttribute('data-w', next);
+  });
 }
-function cueFullHtml(item) {
-  return '<div class="cue" id="cueFull"><div class="cue-text">' + I.bulb + ' ' + esc(item.text) + ' <span class="tiny muted">(≤10 字)</span></div>' +
-    '<div style="margin-top:6px;"><button class="btn btn-sm btn-soft" id="whyBtn">为什么</button></div>' +
-    '<div class="cue-actions"><button class="btn btn-sm btn-primary" id="useBtn">用掉</button>' +
-    '<button class="btn btn-sm btn-ghost" id="ignoreCueBtn">忽略</button></div></div>';
+function paintSignal(m) {
+  const v = bandView(m);
+  $$('#signalBand .signal-lane i').forEach((bar, i) => {
+    bar.className = 'l' + (i + 1) + ' ' + v.cls;
+    bar.style.width = v.pct + '%';
+    bar.setAttribute('data-w', v.pct);
+  });
+  const n = $('#bandNote'); if (n) n.textContent = v.note;
+  if (m.baseline_ready) { const st = $('#intStatus'); if (st) st.textContent = '候选人已进入 · 已建基线'; }
 }
-function wireFull(item, adopt, ignore) {
-  $('#whyBtn').addEventListener('click', () => toggleWhy(item));
-  $('#useBtn').addEventListener('click', () => { adopt++; $('#adoptChip').textContent = '采纳 ' + adopt; $('#cueWrap').innerHTML = ''; });
-  $('#ignoreCueBtn').addEventListener('click', () => { ignore++; $('#ignoreChip').textContent = '忽略 ' + ignore; $('#cueWrap').innerHTML = ''; });
+function connectInterviewer(state) {
+  const ws = new WebSocket(BE.ws + '/ws/room/' + encodeURIComponent(state.code) + '?role=interviewer');
+  state.ws = ws;
+  ws.onopen = () => { const n = $('#bandNote'); if (n) n.textContent = '已连接后端'; };
+  ws.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    handleIntMsg(state, m);
+  };
+  ws.onclose = () => { if (!state.ended) { const n = $('#bandNote'); if (n) n.textContent = '后端离线 · 本地演示模式'; const st = $('#intStatus'); if (st && !state.hasSignal) st.textContent = '等待候选人进入…'; } };
+  every(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'ping', t: state.sec })); }, 15000);
+}
+function handleIntMsg(state, m) {
+  if (!m || !m.type) return;
+  if (m.type === 'hello_ack') {
+    const room = m.room || {};
+    if (room.job_title) window.__corgiJob = room.job_title;
+    const n = $('#bandNote'); if (n) n.textContent = '会话 ' + (m.session_id || '已建立');
+  }
+  else if (m.type === 'snapshot') {
+    state.cues = (m.hints || []).map(h => cueItem(h));
+    state.adopt = (m.hints || []).filter(h => h.action === 'used').length;
+    state.ignore = (m.hints || []).filter(h => h.action === 'ignored').length;
+    syncChips(state);
+    renderCues(state);
+  }
+  else if (m.type === 'peer') {
+    const st = $('#intStatus');
+    if (m.role === 'candidate') st.textContent = m.state === 'online' ? '候选人已进入' : '等待候选人进入…';
+  }
+  else if (m.type === 'signal') {
+    state.hasSignal = true;
+    paintSignal(m);
+  }
+  else if (m.type === 'hint') {
+    pushCue(state, m);
+  }
+  else if (m.type === 'hint_ack') {
+    const c = state.cues.find(x => x.id === m.id);
+    if (c) c.action = m.action;
+  }
+  else if (m.type === 'confirm_requested') {
+    showConfirm(state, '正在取证…（' + (m.used || 1) + '/' + (m.budget || 5) + '）');
+  }
+  else if (m.type === 'confirm_result') {
+    showConfirm(state, m.confirmed ? '取证确认' : '未证实');
+  }
+  else if (m.type === 'turn_start') {
+    const st = $('#intStatus'); if (st) st.textContent = '第 ' + m.turn_id + ' 轮回答';
+  }
+  else if (m.type === 'status') {
+    if (m.state === 'no_consent') {
+      const b = $('#signalBand'); if (b) b.style.display = 'none';
+      const st = $('#intStatus'); if (st) st.textContent = '本次仅语音，不做画面分析';
+    } else if (m.state === 'degraded') {
+      const n = $('#bandNote'); if (n) n.textContent = '分析已降级 · 信号仅供参考';
+      $$('#signalBand .bar i').forEach(i => { i.className = 'xstriped'; });
+    }
+  }
+  else if (m.type === 'report_ready') {
+    state.ended = true;
+    state.reported = true;
+    const rep = m.report || {};
+    saveSession({ id: m.session_id, role: 'interviewer', title: rep.title ? rep.title + ' · ' + (window.__corgiJob || '未命名职位') : (window.__corgiJob || '前端工程师'), date: nowStr(), duration: fmtTs(rep.duration || state.sec), followUps: (rep.points || []).length, adoptRate: rep.hint_stats ? (rep.hint_stats.adopt_rate || 0) : denyZero(state.adopt + state.ignore, state.adopt), deleted: false });
+    location.hash = '#/report/' + m.session_id;
+  }
+}
+function cueItem(h) {
+  return { id: h.id, kind: h.kind, text: h.text, why: h.why, title: KIND_TITLE[h.kind] || '提示', action: h.action || null, confirmed: !!h.confirmed, dim: false };
+}
+function pushCue(state, h) {
+  if (state.cues.length >= 2) state.cues.shift();
+  const c = cueItem(h);
+  state.cues.push(c);
+  renderCues(state);
+  later(() => { c.dim = true; renderCues(state); }, 3000);
+}
+function syncChips(state) {
+  $('#adoptChip').textContent = '采纳 ' + state.adopt;
+  $('#ignoreChip').textContent = '忽略 ' + state.ignore;
+}
+function renderCues(state) {
+  const wrap = $('#cueWrap'); if (!wrap) return;
+  if (!state.cues.length) { wrap.innerHTML = '<p class="tiny muted" style="margin:10px 2px;">等待提示卡…（行为信号触发后滑入）</p>'; return; }
+  wrap.innerHTML = state.cues.map(c => cueCardHtml(c)).join('');
+  state.cues.forEach(c => wireCue(state, c));
+}
+function cueCardHtml(c) {
+  const tag = c.action === 'used' ? '<span class="chip green">已用掉</span>' : c.action === 'ignored' ? '<span class="chip gray">已忽略</span>' : '';
+  return '<div class="cue' + (c.dim ? ' dim' : '') + '" data-id="' + esc(c.id) + '">' +
+    '<div class="cue-top"><span class="cue-kind">' + esc(c.title) + '</span>' + (c.confirmed ? '<span class="chip green">已证实</span>' : '') + tag + '</div>' +
+    '<div class="cue-text">' + esc(c.text) + '</div>' +
+    (c.action ? '' : '<div class="cue-actions"><button class="btn btn-sm btn-soft" data-act="why">为什么</button><button class="btn btn-sm btn-primary" data-act="used">用掉</button><button class="btn btn-sm btn-ghost" data-act="ignored">忽略</button></div>') +
+    '</div>';
+}
+function wireCue(state, c) {
+  const el = $('#cueWrap [data-id="' + c.id + '"]'); if (!el) return;
+  $$('button[data-act]', el).forEach(b => b.addEventListener('click', () => {
+    const a = b.dataset.act;
+    if (a === 'why') {
+      const has = el.querySelector('.cue-why');
+      if (has) { has.remove(); return; }
+      const d = document.createElement('div');
+      d.className = 'cue-why';
+      d.textContent = '为什么提这个？' + (c.why || '');
+      const acts = el.querySelector('.cue-actions');
+      if (acts) acts.before(d);
+      return;
+    }
+    c.action = a;
+    state[a === 'used' ? 'adopt' : 'ignore']++;
+    syncChips(state);
+    if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ type: 'hint_feedback', hint_id: c.id, action: a }));
+    else apiMaybe('/api/hints/' + c.id + '/feedback', { method: 'POST', body: JSON.stringify({ action: a }) });
+    renderCues(state);
+  }));
+}
+function showConfirm(state, text) {
+  const wrap = $('#cueWrap'); if (!wrap) return;
+  let el = $('#confirmLine');
+  if (!el) { el = document.createElement('div'); el.id = 'confirmLine'; el.className = 'tiny muted'; el.style.margin = '10px 2px 0'; wrap.prepend(el); }
+  el.textContent = text;
+  if (text === '未证实') el.style.color = 'var(--ink-3)';
 }
 
 /* ---------- analysis ---------- */
+function anaRow(r) {
+  const id = r.id || r.session_id;
+  const time = r.date || (r.started_at ? fmtDate(r.started_at) : '');
+  const dur = r.duration != null ? (typeof r.duration === 'number' ? fmtTs(r.duration) : String(r.duration)) : '--';
+  const ups = r.followUps != null ? r.followUps : (r.points != null ? r.points : 0);
+  const rate = Math.round((r.adoptRate != null ? r.adoptRate : 0) * 100) + '%';
+  const del = r.deleted ? ' <span class="chip red" style="margin-left:6px;">已删除</span>' : '';
+  return '<a class="list-row" href="#/report/' + esc(id) + '" style="text-decoration:none;color:inherit;">' +
+    '<div class="kv" style="min-width:120px;"><span class="k">时间</span><span class="v" style="font-size:14px;">' + esc(time) + '</span></div>' +
+    '<div class="grow kv"><span class="k">职位</span><span class="v">' + esc(r.title || r.job_title || '未命名职位') + del + '</span></div>' +
+    '<div class="kv"><span class="k">追问点</span><span class="v">' + ups + '</span></div>' +
+    '<div class="kv"><span class="k">采纳率</span><span class="v">' + rate + '</span></div>' + I.chev + '</a>';
+}
+const anaEmpty = '<div class="empty">' + I.hist + '<div class="big">还没有面试记录</div><div>创建房间完成第一场面试后，分析会出现在这里。</div></div>';
+
 routes['/interviewer/analysis'] = {
   key: 'analysis',
   render() {
-    const s = getSessions();
-    const body = s.length === 0
-      ? '<div class="empty">' + I.hist + '<div class="big">还没有面试记录</div><div>创建房间完成第一场面试后，分析会出现在这里。</div></div>'
-      : s.map(row =>
-        '<a class="list-row" href="#/report/' + esc(row.id) + '" style="text-decoration:none;color:inherit;">' +
-        '<div class="kv" style="min-width:120px;"><span class="k">时间</span><span class="v" style="font-size:14px;">' + esc(row.date) + '</span></div>' +
-        '<div class="grow kv"><span class="k">职位</span><span class="v">' + esc(row.title) + (row.deleted ? ' <span class="chip red" style="margin-left:6px;">已删除</span>' : '') + '</span></div>' +
-        '<div class="kv"><span class="k">追问点</span><span class="v">' + row.followUps + '</span></div>' +
-        '<div class="kv"><span class="k">采纳率</span><span class="v">' + Math.round(row.adoptRate * 100) + '%</span></div>' + I.chev + '</a>').join('');
+    const list = getSessions();
+    const local = list.length === 0 ? anaEmpty : list.map(r => anaRow(r)).join('');
     return navHtml('analysis') +
       '<main class="wrap page page-narrow fade-in">' +
       '<div class="row-between"><div><h1 style="font-size:30px;">面试者分析</h1><p class="panel-sub mt-8">历史场次的追问点与采纳情况。</p></div>' +
       '<a class="btn btn-ink" href="#/interviewer">' + I.spark + ' 新建面试</a></div>' +
-      '<div class="stack mt-24">' + body + '</div>' +
+      '<div class="stack mt-24" id="anaList">' + local + '</div>' +
       '</main>' + footerHtml();
   },
   mount() {
+    const box = $('#anaList');
+    apiJSON('/api/interviews').then(j => {
+      const rows = (j && j.items) || [];
+      box.innerHTML = rows.length === 0 ? anaEmpty : rows.map(anaRow).join('');
+    }).catch(() => {});
     const sw = $('#switchRole'); if (sw) sw.addEventListener('click', () => { LS.del('corgi_role'); location.hash = '#/'; render(); });
   }
 };
 
 /* ---------- report ---------- */
+function mapReport(j, mode) {
+  const hs = j.hint_stats || {};
+  return {
+    conclusion: j.summary || (mode === 'candidate' ? '本场未发现明显需要追问的点，信号平稳。' : ''),
+    points: (j.points || []).map(pt => ({ t: pt.clock || fmtClock(pt.t || 0), line: pt.text || '', ev: pt.why || pt.label || '' })),
+    adoptRate: hs.adopt_rate != null ? hs.adopt_rate : 0,
+    duration: fmtTs(j.duration || 0),
+    title: j.title || (mode === 'candidate' ? '这份面试报告' : '面试质量报告'),
+    date: '',
+    deleted: false,
+    disclaimer: j.disclaimer || ''
+  };
+}
+function drawReport(p, mode, d) {
+  $('#repMeta').textContent = d.title + (d.date ? ' · ' + d.date : '') + ' · 时长 ' + (d.duration || '--');
+  const points = (d.points || []).map((pt, i) =>
+    '<div class="point-card"><div class="row-between"><span class="chip peach">追问点 ' + (i + 1) + '</span>' +
+    '<span class="point-ts" data-t="' + esc(pt.t) + '">' + I.play + ' ' + esc(pt.t) + '</span></div>' +
+    '<div style="font-weight:700;font-size:17px;margin-top:12px;">' + esc(pt.line) + '</div>' +
+    '<div class="evidence mt-12">' + I.eye + ' <b>证据</b> · ' + esc(pt.ev) + '</div></div>').join('');
+  const conclusion = mode === 'candidate'
+    ? (d.conclusion || '你整体表达自然，节奏稳定；建议把“我们”换成“我负责”，并给每个结论配一条证据。')
+    : d.conclusion;
+  const delNote = d.deleted
+    ? '<span class="chip red">' + I.x + ' 已删除 · 数据将在 7 天后清除</span>'
+    : '<span class="chip gray">删除状态：未删除</span>';
+  $('#repBody').innerHTML =
+    '<div class="conclusion">一句话结论<br><span style="font-weight:400;font-size:17px;">' + esc(conclusion) + '</span></div>' +
+    '<div class="grid-3 mt-16">' +
+    '<div class="stat-box"><div class="num">' + (d.points || []).length + '</div><div class="lab">追问点</div></div>' +
+    '<div class="stat-box"><div class="num">' + Math.round((d.adoptRate || 0) * 100) + '%</div><div class="lab">提示采纳率</div></div>' +
+    '<div class="stat-box"><div class="num">' + (d.duration || '--') + '</div><div class="lab">面试时长</div></div></div>' +
+    '<div class="stack mt-16">' + (points || anaEmpty) + '</div>' +
+    '<div class="card card-pad mt-16" id="replayCard" style="display:none;"><div class="row-between"><b>回看 20 秒</b><span class="tiny muted" id="replayT"></span></div>' +
+    '<div class="replay mt-12"><div class="r-track"><i id="replayBar"></i></div><div class="tiny muted" style="margin-top:8px;">模拟回放该时间点前后 20 秒的问答。</div></div></div>' +
+    '<div class="card card-pad mt-16" style="display:flex;flex-direction:column;gap:10px;">' +
+    '<div class="row-between"><b>合规与数据</b>' + delNote + '</div>' +
+    '<div class="small muted">' + (d.disclaimer || '本报告基于面试音视频与设备信号生成，仅提供给面试双方本人。候选人可随时申请删除，删除后 7 天内彻底清除。') + '</div>' +
+    '<div class="row" style="justify-content:flex-end;gap:10px;margin-top:4px;">' +
+    '<button class="btn btn-ghost btn-sm" id="delBtn">' + I.x + ' 删除本场数据</button>' +
+    '<button class="btn btn-ink btn-sm" id="copyBtn">' + I.copy + ' 复制文本</button></div></div>';
+  $$('.point-ts').forEach(ts => ts.addEventListener('click', () => replay(ts.dataset.t)));
+  $('#copyBtn').addEventListener('click', () => {
+    const text = reportText(p.id, mode, d);
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(() => toast('已复制到剪贴板'), () => toast('复制失败')); }
+    else toast('复制失败：浏览器不支持');
+  });
+  $('#delBtn').addEventListener('click', () => {
+    markDeleted(p.id); toast('已提交删除申请，7 天后彻底清除'); render();
+  });
+}
+
 routes['/report/:id'] = {
   key: 'report',
   render(p) {
@@ -589,7 +911,7 @@ routes['/report/:id'] = {
       '<div class="row-between"><div><h1 style="font-size:30px;">面试报告</h1>' +
       '<p class="panel-sub mt-8" id="repMeta"></p></div>' +
       '<div class="seg-toggle" id="seg"><button data-m="interviewer">面试官版</button><button data-m="candidate">候选人版</button></div></div>' +
-      '<div class="mt-24" id="repBody"></div>' +
+      '<div class="mt-24" id="repBody">加载中…</div>' +
       '</main>' + footerHtml();
   },
   mount(p) {
@@ -597,50 +919,15 @@ routes['/report/:id'] = {
     const seg = $('#seg');
     $$('button', seg).forEach(b => b.addEventListener('click', () => {
       mode = b.dataset.m;
-      $$('button', seg).forEach(x => x.classList.toggle('on', x === b));
-      draw(mode);
+      load(mode);
     }));
-    const draw = m => {
+    const load = async m => {
       $$('button', seg).forEach(x => x.classList.toggle('on', x.dataset.m === m));
-      const d = reportData(p.id, m);
-      $('#repMeta').textContent = d.title + ' · ' + (d.date || '') + ' · 时长 ' + d.duration;
-      const points = d.points.map((pt, i) =>
-        '<div class="point-card"><div class="row-between"><span class="chip peach">追问点 ' + (i + 1) + '</span>' +
-        '<span class="point-ts" data-t="' + pt.t + '">' + I.play + ' ' + pt.t + '</span></div>' +
-        '<div style="font-weight:700;font-size:17px;margin-top:12px;">' + esc(pt.line) + '</div>' +
-        '<div class="evidence mt-12">' + I.eye + ' <b>证据</b> · ' + esc(pt.ev) + '</div></div>').join('');
-      const conclusion = m === 'candidate'
-        ? '你整体表达自然，节奏稳定；建议在“功劳归属”处多把“我们”换成“我负责”，并给每个结论配一条证据。'
-        : d.conclusion;
-      const delNote = d.deleted
-        ? '<span class="chip red">' + I.x + ' 已删除 · 数据将在 7 天后清除</span>'
-        : '<span class="chip gray">删除状态：未删除</span>';
-      $('#repBody').innerHTML =
-        '<div class="conclusion">一句话结论<br><span style="font-weight:400;font-size:17px;">' + esc(conclusion) + '</span></div>' +
-        '<div class="grid-3 mt-16">' +
-        '<div class="stat-box"><div class="num">' + d.points.length + '</div><div class="lab">追问点</div></div>' +
-        '<div class="stat-box"><div class="num">' + Math.round(d.adoptRate * 100) + '%</div><div class="lab">提示采纳率</div></div>' +
-        '<div class="stat-box"><div class="num">' + d.duration + '</div><div class="lab">面试时长</div></div></div>' +
-        '<div class="stack mt-16">' + points + '</div>' +
-        '<div class="card card-pad mt-16" id="replayCard" style="display:none;"><div class="row-between"><b>回看 20 秒</b><span class="tiny muted" id="replayT"></span></div>' +
-        '<div class="replay mt-12"><div class="r-track"><i id="replayBar"></i></div><div class="tiny muted" style="margin-top:8px;">模拟回放该时间点前后 20 秒的问答。</div></div></div>' +
-        '<div class="card card-pad mt-16" style="display:flex;flex-direction:column;gap:10px;">' +
-        '<div class="row-between"><b>合规与数据</b>' + delNote + '</div>' +
-        '<div class="small muted">本报告基于面试音视频与设备信号生成，仅提供给面试双方本人。候选人可随时申请删除，删除后 7 天内彻底清除。</div>' +
-        '<div class="row" style="justify-content:flex-end;gap:10px;margin-top:4px;">' +
-        '<button class="btn btn-ghost btn-sm" id="delBtn">' + I.x + ' 删除本场数据</button>' +
-        '<button class="btn btn-ink btn-sm" id="copyBtn">' + I.copy + ' 复制文本</button></div></div>';
-      $$('.point-ts').forEach(ts => ts.addEventListener('click', () => replay(ts.dataset.t)));
-      $('#copyBtn').addEventListener('click', () => {
-        const text = reportText(p.id, m, d);
-        if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(() => toast('已复制到剪贴板'), () => toast('复制失败')); }
-        else toast('复制失败：浏览器不支持');
-      });
-      $('#delBtn').addEventListener('click', () => {
-        markDeleted(p.id); toast('已提交删除申请，7 天后彻底清除'); render();
-      });
+      const j = await apiMaybe('/api/sessions/' + encodeURIComponent(p.id) + '/report?role=' + m);
+      const d = j ? mapReport(j, m) : reportData(p.id, m);
+      drawReport(p, m, d);
     };
-    draw(mode);
+    load(mode);
     const sw = $('#switchRole'); if (sw) sw.addEventListener('click', () => { LS.del('corgi_role'); location.hash = '#/'; render(); });
     function replay(t) {
       const card = $('#replayCard'); card.style.display = '';
@@ -653,14 +940,11 @@ routes['/report/:id'] = {
 };
 
 function reportText(id, mode, d) {
-  const head = '【' + d.title + '面试报告】\n时长 ' + d.duration + ' · 追问点 ' + d.points.length + ' · 提示采纳率 ' + Math.round(d.adoptRate * 100) + '%\n\n';
-  const one = '一句话结论：' + (mode === 'candidate'
-    ? '你整体表达自然，节奏稳定；建议把“我们”换成“我负责”，并给每个结论配一条证据。' : d.conclusion) + '\n\n';
-  const pts = d.points.map((p, i) => '追问点 ' + (i + 1) + '（' + p.t + '）：' + p.line + '\n证据：' + p.ev).join('\n\n');
-  const tail = mode === 'candidate'
-    ? '\n\n—— 本报告仅供你本人练习使用，可随时删除。'
-    : '\n\n—— 本报告由 AI 辅助生成，请结合你的专业判断使用。';
-  return head + one + pts + tail;
+  const head = '【' + (d.title || '面试报告') + '】\n时长 ' + (d.duration || '--') + ' · 追问点 ' + (d.points || []).length + ' · 提示采纳率 ' + Math.round((d.adoptRate || 0) * 100) + '%\n\n';
+  const one = '一句话结论：' + (d.conclusion || '') + '\n\n';
+  const pts = (d.points || []).map((p, i) => '追问点 ' + (i + 1) + '（' + (p.t || '') + '）：' + (p.line || '') + '\n证据：' + (p.ev || '')).join('\n\n');
+  const disc = d.disclaimer ? '\n\n—— ' + d.disclaimer : '';
+  return head + one + pts + disc;
 }
 
 /* ---------- 404 & footer & boot ---------- */

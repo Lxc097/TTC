@@ -386,3 +386,19 @@ p { margin: 0; }
 .hero-fixed { min-height: calc(100vh - 64px); display: flex; align-items: center; }
 .hero-fixed .hero-center { flex: 1; }
 .hero-fixed .hero { padding: 48px 0 56px; }
+/* ---------- backend wiring overrides ---------- */
+.hs-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 0; }
+.hs-video + .hs-sky { z-index: 0; }
+.bar i.xidle { background: var(--gray-2); }
+.bar i.xblue { background: var(--blue); }
+.bar i.xamber { background: var(--amber); }
+.bar i.xred { background: var(--red); }
+.bar i.xstriped { background: repeating-linear-gradient(45deg, #d8d8d8 0 6px, #efefef 6px 12px); }
+.signal-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cue { position: relative; right: auto; top: auto; }
+.cue + .cue { margin-top: 10px; }
+.cue.dim { opacity: .45; }
+.cue-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.cue-kind { font-size: 12px; font-weight: 700; color: var(--orange-strong); background: var(--peach); border-radius: 999px; padding: 2px 8px; }
+.chip.green { background: var(--green-soft); color: var(--green); }
+.cue-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
