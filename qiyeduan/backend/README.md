@@ -169,6 +169,9 @@ python tools/probe_vision_api.py --image samples/face.jpg --times 5
 
 判据：`VISION_PROVIDER=facephys`。代码在 `vision_facephys.py`，接口来自官方 v3 文档。
 
+> 📘 **完整接入步骤看 [FacePhys 接入指南](../docs/FacePhys接入指南.md)**
+> —— 签名算法（Python/JS/curl）、三步流程、六个实测坑、质量判定、排错表。
+
 **已实测通过**（用官网演示视频跑的真实全链路）：
 
 ```
