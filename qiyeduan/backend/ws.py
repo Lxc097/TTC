@@ -181,6 +181,8 @@ class RoomHub:
             "face_count": sample.face_count,
             "baseline_ready": self.room.baseline.ready,
             "baseline_remaining": round(self.room.baseline.remaining(t), 1),
+            # sqi 在 0.15~0.30 之间：能用但只能参考，界面要如实标"信号偏弱"
+            "signal_weak": bool(0 < sample.quality < config.SQI_STRONG),
         }
         # FacePhys 会白送活体检测，正好支撑「是不是本人」这条产品线。
         # 注意：这只是**提示**，永不参与任何自动决策。

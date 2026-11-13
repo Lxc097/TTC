@@ -71,7 +71,12 @@ VISION_PROVIDER = os.getenv("VISION_PROVIDER", "mock")
 
 # ---------- 采样 ----------
 FRAME_FPS = _i("FRAME_FPS", 5)                 # 候选人上报帧率，仅用于校验
-MIN_QUALITY = _f("MIN_QUALITY", 0.5)           # 低于此质量的数据直接丢弃
+# 低于此质量的数据直接丢弃。
+# 官方对 rPPG 的 sqi 分档：>=0.30 可用，0.15~0.30 仅供参考，<0.15 不可用。
+# 实测真实手机视频的 sqi 只有 0.20 上下，所以默认取 0.15 这一档下限；
+# 0.15~0.30 之间样本仍进基线，但会带 signal_weak 标记，前端应显示"信号偏弱"。
+MIN_QUALITY = _f("MIN_QUALITY", 0.15)
+SQI_STRONG = _f("SQI_STRONG", 0.30)   # 超过它才算"信号好"
 SAMPLE_MIN_INTERVAL = _f("SAMPLE_MIN_INTERVAL", 2.0)  # 两次调 API 的最小间隔（秒）
 
 # ---------- 基线 ----------
