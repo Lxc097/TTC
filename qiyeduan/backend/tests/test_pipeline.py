@@ -344,5 +344,119 @@ class TestTriggerConfirm(PipelineCase):
         self.assertEqual(len(req), 2, "超时的证据请求不该永久卡住下一次")
 
 
+class TestAuditFixes(PipelineCase):
+    """2025-xx 审计发现的 6 个问题的回归测试。"""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.vp = VideoProvider()
+        ws_mod.PROVIDER = self.vp
+        self._orig_floor = config.TOKEN_FLOOR
+
+    async def asyncTearDown(self) -> None:
+        config.TOKEN_FLOOR = self._orig_floor
+        await super().asyncTearDown()
+
+    async def _baseline(self, hr: float = 80.0) -> None:
+        for t, h in ((0.0, hr - 1), (5.0, hr), (9.0, hr + 1)):
+            await self.hub._emit_sample(
+                PhysioSample(t=t, hr=h, rr=16.0, quality=0.6, face_count=1), t)
+        self.hub.room.baseline.freeze()
+
+    # ---- 1. 客户端时间必须被服务端时间覆盖 ----
+    async def test_server_clock_overrides_client_t(self):
+        STORE.start_session(self.room, consent=True)
+        await ws_mod.handle_message(
+            self.hub, "interviewer", {"type": "turn_start", "t": 9999})
+
+        msgs = [m for m in self.iws.msgs if m["type"] == "turn_start"]
+        self.assertEqual(len(msgs), 1)
+        self.assertLess(msgs[0]["t"], 5,
+                        "客户端传的 t=9999 必须被忽略，一律用服务端时间轴")
+
+    # ---- 2. 证据晚到时，hint 必须挂在触发的那一轮 ----
+    async def test_hint_attached_to_triggering_turn(self):
+        STORE.start_session(self.room, consent=True)
+        await self._baseline()
+        # 第 1 轮正常
+        await self.hub.on_turn_start(60.0)
+        await self.hub.on_turn_end(90.0, "正常回答。", {"pause_ratio": 0.05})
+        # 第 2 轮触发取证
+        await self.hub.on_turn_start(120.0)
+        await self.hub.on_turn_end(150.0, "绕圈。", {"pause_ratio": 0.8})
+        self.assertEqual(self.hub.pending["turn_id"], 2)
+        # 第 3 轮在证据回来之前就结束了（真实场景里必然发生）
+        await self.hub.on_turn_start(160.0)
+        await self.hub.on_turn_end(190.0, "下一题。", {"pause_ratio": 0.05})
+
+        ws_mod.PROVIDER = VideoProvider(hr=96.0)
+        await self.hub.on_video_chunk("eA==", 210.0)
+
+        hints = [m for m in self.iws.msgs if m["type"] == "hint"]
+        self.assertEqual(len(hints), 1)
+        self.assertEqual(hints[0]["turn_id"], 2,
+                         "提示必须挂在第 2 轮，不能因为第 3 轮已结束就漂移")
+
+    # ---- 3. 候选人不在线时不该浪费额度和 90 秒 pending ----
+    async def test_no_request_when_candidate_offline(self):
+        STORE.start_session(self.room, consent=True)
+        self.hub.remove("candidate", self.cws)
+        await self.hub.on_turn_start(120.0)
+        await self.hub.on_turn_end(150.0, "绕圈。", {"pause_ratio": 0.8})
+        self.assertIsNone(self.hub.pending, "没人接请求，不该占着 pending")
+        self.assertEqual(self.hub.session.confirms_requested, 0)
+
+    # ---- 4. 余额见底要停手并告知 ----
+    async def test_token_floor_blocks_request(self):
+        config.TOKEN_FLOOR = 200_000
+        self.vp.tokens_left = 50_000          # 连一次都不够
+        STORE.start_session(self.room, consent=True)
+        await self.hub.on_turn_start(120.0)
+        await self.hub.on_turn_end(150.0, "绕圈。", {"pause_ratio": 0.8})
+
+        self.assertIsNone(self.hub.pending)
+        self.assertNotIn("record_request",
+                         [m["type"] for m in self.cws.msgs])
+        self.assertIn("status", self.iws.types())
+        self.assertIn("余额不足", self.iws.msgs[-1]["reason"])
+
+    # ---- 5. 没有会话就点结束，要给明确回应而不是静默 ----
+    async def test_end_without_session_notifies(self):
+        await self.hub.on_end()               # 还没 start_session
+        st = [m for m in self.iws.msgs if m["type"] == "status"]
+        self.assertEqual(len(st), 1)
+        self.assertEqual(st[0]["state"], "no_session")
+        self.assertNotIn("report_ready", self.iws.types())
+
+    # ---- 6. 重复点结束要幂等 ----
+    async def test_end_is_idempotent(self):
+        STORE.start_session(self.room, consent=True)
+        await self.hub.on_end()
+        first = self.hub.session.report
+        await self.hub.on_end()
+        reports = [m for m in self.iws.msgs if m["type"] == "report_ready"]
+        self.assertEqual(len(reports), 2)
+        # 走了一次 JSON 序列化，比内容不比身份
+        self.assertEqual(reports[0]["report"], first)
+        self.assertEqual(reports[1]["report"], first,
+                         "第二次必须是同一份，不重建")
+
+    # ---- 7. 报告里要有取证诚实度 ----
+    async def test_report_has_verification_stats(self):
+        STORE.start_session(self.room, consent=True)
+        await self._baseline()
+        await self.hub.on_turn_start(120.0)
+        await self.hub.on_turn_end(150.0, "绕圈。", {"pause_ratio": 0.8})
+        self.vp.hr = 80.4                     # 生理没确认上
+        await self.hub.on_video_chunk("eA==", 170.0)
+        await self.hub.on_end()
+
+        rep = [m for m in self.iws.msgs if m["type"] == "report_ready"][0]["report"]
+        self.assertEqual(rep["verification"]["requested"], 1)
+        self.assertEqual(rep["verification"]["confirmed"], 0)
+        self.assertEqual(rep["verification"]["unconfirmed"], 1,
+                         "没坐实的次数必须如实写进报告")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

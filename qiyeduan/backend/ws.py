@@ -14,6 +14,7 @@ import asyncio
 import base64
 import json
 import os
+import time
 from collections import deque
 from typing import Any
 
@@ -52,6 +53,19 @@ class RoomHub:
         self.video_busy = False      # 视频形态：同一时间只允许一段在分析
         self.pending: dict | None = None   # 已请求、等待回来的证据
         self.confirm_used = 0              # 本场已经花掉几次确认额度
+        self.token_warned = False          # 余额告警只发一次
+
+    def server_t(self) -> float:
+        """服务端权威时间轴（相对会话开始的秒数）。
+
+        **不要把客户端的 t 当真。** 面试官和候选人各自从"自己连上那一刻"
+        开始计时，两条时间轴可能差几十秒。混用会让 turn_end 的时间戳和
+        video_chunk 的采样时刻对不上，轮次窗口匹配、报告时钟全都会乱。
+        """
+        session = self.session
+        if session is None:
+            return 0.0
+        return max(0.0, time.time() - session.started_at)
 
     # ---------------- 连接管理 ----------------
     def add(self, role: str, ws) -> None:
@@ -281,7 +295,7 @@ class RoomHub:
         })
 
         if draft is not None:
-            hint = STORE.add_hint(session, draft, t)
+            hint = STORE.add_hint(session, draft, t, turn_id=turn.turn_id)
             self.room.last_hint_t = t
             await self.send("interviewer", {
                 "type": "hint",
@@ -319,9 +333,24 @@ class RoomHub:
         if not trig.fired:
             return
 
+        # 没有候选人在线就别浪费额度：请求发不出去，pending 会白占 90 秒
+        if not self.conns.get("candidate"):
+            return
+        # 余额见底就停手 —— 现场跑到一半没额度比"少采一次"严重得多
+        left = getattr(PROVIDER, "tokens_left", None)
+        if left is not None and left < config.TOKEN_FLOOR:
+            if not self.token_warned:
+                self.token_warned = True
+                await self.send("interviewer", {
+                    "type": "status", "state": "degraded",
+                    "reason": f"Token 余额不足（剩 {left}），已停止取证",
+                    "t": t})
+            return
+
         self.pending = {"turn_id": turn.turn_id, "t": t, "beh": turn.beh,
                         "reason": trig.reason, "score": trig.score}
         self.confirm_used += 1
+        session.confirms_requested += 1
 
         await self.send("candidate", {
             "type": "record_request",
@@ -365,7 +394,9 @@ class RoomHub:
             })
             return
 
-        hint = STORE.add_hint(session, draft, pending["t"])
+        hint = STORE.add_hint(session, draft, pending["t"],
+                              turn_id=pending["turn_id"])
+        session.confirms_confirmed += 1
         self.room.last_hint_t = pending["t"]
         await self.send("interviewer", {
             "type": "hint",
@@ -382,7 +413,19 @@ class RoomHub:
     async def on_end(self) -> None:
         session = self.session
         if session is None:
+            # 候选人还没进来就点结束：明确回一句，别让前端一直等 report_ready
+            await self.send("interviewer", {
+                "type": "status", "state": "no_session",
+                "reason": "还没有候选人进入，本场未开始",
+                "t": self.server_t()})
             return
+        if session.report is not None:
+            # 幂等：重复点结束就把已有报告再发一遍，不重复生成
+            await self.send("interviewer", {
+                "type": "report_ready", "session_id": session.id,
+                "report": session.report})
+            return
+
         STORE.end_session(session)
         await self.stop()        # 等 worker 真正退出，否则长跑泄漏
 
@@ -438,7 +481,8 @@ def _decode_frame(data_url: str) -> bytes | None:
 
 
 async def handle_message(hub: RoomHub, role: str, msg: dict) -> None:
-    t = float(msg.get("t", 0) or 0)
+    # 时间一律由服务端给：客户端 t 只在会话尚未建立时兜底
+    t = hub.server_t() if hub.session is not None else float(msg.get("t", 0) or 0)
     mtype = msg.get("type")
 
     if mtype == "frame":

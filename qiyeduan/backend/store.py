@@ -45,6 +45,10 @@ class Session:
     hints: list[Hint] = field(default_factory=list)
     samples: list[PhysioSample] = field(default_factory=list)
     report: Optional[dict] = None
+    # 取证诚实度：申请了几次、坐实了几次。报告里要如实写出来，
+    # "4 次取证里有 2 次没坐实"比只报成功更有说服力。
+    confirms_requested: int = 0
+    confirms_confirmed: int = 0
 
     @property
     def adopt_rate(self) -> float:
@@ -106,8 +110,16 @@ class Store:
     def get_session(self, sid: str) -> Optional[Session]:
         return self.sessions.get(sid)
 
-    def add_hint(self, session: Session, draft: HintDraft, t: float) -> Hint:
-        h = Hint(id=uuid.uuid4().hex[:8], turn_id=len(session.turns),
+    def add_hint(self, session: Session, draft: HintDraft, t: float,
+                 turn_id: int | None = None) -> Hint:
+        """turn_id 必须显式传。
+
+        以前用 len(session.turns) 推，在"证据晚 30 秒才回来"的场景里会算错：
+        触发时是第 2 轮，等视频回来时第 3 轮已经结束，len 变成 3，
+        提示就被挂到了不相干的第 3 轮上。
+        """
+        h = Hint(id=uuid.uuid4().hex[:8],
+                 turn_id=turn_id if turn_id is not None else len(session.turns),
                  kind=draft.kind, text=draft.text, why=draft.why, t=t)
         session.hints.append(h)
         return h

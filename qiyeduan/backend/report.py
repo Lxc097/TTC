@@ -76,6 +76,14 @@ def build_report(session: Session) -> dict:
         "duration": round((session.ended_at or 0) - session.started_at, 1),
         "turns": len(session.turns),
         "points": points,
+        # 取证诚实度：申请了几次、坐实了几次。把"没坐实"写进报告，
+        # 比只报成功更能说明这套信号是可验证的，而不是玄学。
+        "verification": {
+            "requested": session.confirms_requested,
+            "confirmed": session.confirms_confirmed,
+            "unconfirmed": max(0, session.confirms_requested
+                               - session.confirms_confirmed),
+        },
         "hint_stats": {
             "total": len(session.hints),
             "used": sum(1 for h in session.hints if h.action == "used"),

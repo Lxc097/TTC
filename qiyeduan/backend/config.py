@@ -97,6 +97,9 @@ TRIGGER_STRONG = _f("TRIGGER_STRONG", 0.75)        # 单通道达到这个值直
 CONFIRM_MAX = _i("CONFIRM_MAX", 5)                 # 每场最多请求几段确认视频（省钱闸门）
 CONFIRM_CLIP_SECONDS = _i("CONFIRM_CLIP_SECONDS", 20)  # 每次请求录多长（必须 >=15）
 PENDING_TIMEOUT = _f("PENDING_TIMEOUT", 90.0)      # 请求后多久没回来就作废
+# 余额低于这个值就不再请求取证：一次 20 秒视频约 17 万 token，
+# 现场跑到一半没额度是比"少采一次"严重得多的事故。
+TOKEN_FLOOR = _i("TOKEN_FLOOR", 200_000)
 
 # ---------- 报告 ----------
 REPORT_MAX_POINTS = _i("REPORT_MAX_POINTS", 3)
