@@ -110,14 +110,90 @@ def build_report(session: Session) -> dict:
 
 
 def build_candidate_report(session: Session, base: dict | None = None) -> dict:
-    """候选人版：同一个组件，换语气。不出现任何分数。
+    """基于候选人自己的转写生成表达回看，不复用面试官的提示或判断。
 
-    传 base 可避免重复计算（ws.on_end 已经构建过面试官版）。
+    ``base`` 只为兼容现有 WS 调用保留；复制它会泄露面试官提示、
+    取证与采纳数据。转写缺失时不推测回答内容。
     """
-    report = dict(base) if base else build_report(session)
-    report.update({
+    del base
+    transcript = [
+        {"role": item["role"], "text": item["text"].strip(),
+         "t": item.get("t", 0)}
+        for item in session.transcript[-120:]
+        if isinstance(item, dict)
+        and item.get("role") in ("candidate", "interviewer")
+        and isinstance(item.get("text"), str)
+        and item["text"].strip()
+    ]
+
+    # STT 分片会把一句话拆成多条；只在发言人切换时形成一段。
+    exchanges: list[dict] = []
+    question_parts: list[str] = []
+    answer_parts: list[str] = []
+    current_question = ""
+    answer_t = 0.0
+
+    def finish_answer() -> None:
+        if answer_parts:
+            exchanges.append({"question": current_question,
+                              "answer": " ".join(answer_parts), "t": answer_t})
+            answer_parts.clear()
+
+    for item in transcript:
+        if item["role"] == "interviewer":
+            finish_answer()
+            question_parts.append(item["text"])
+        else:
+            if not answer_parts:
+                current_question = " ".join(question_parts)
+                question_parts.clear()
+                try:
+                    answer_t = max(0.0, float(item["t"]))
+                except (TypeError, ValueError):
+                    answer_t = 0.0
+            answer_parts.append(item["text"])
+    finish_answer()
+
+    def excerpt(value: str, limit: int = 110) -> str:
+        return value if len(value) <= limit else value[:limit].rstrip() + "…"
+
+    def suggestion(answer: str) -> tuple[str, str]:
+        compact = "".join(answer.split())
+        if len(compact) < 30:
+            return ("补足回答", "这段转写较短。下次可以补充背景、本人行动与结果；转写若不完整，请以实际发言为准。")
+        if "我们" in answer and not any(
+            phrase in answer for phrase in ("我负责", "我做", "我主导", "我参与", "我的任务")
+        ):
+            return ("说清个人贡献", "提到了团队经历。可以补充自己负责的具体动作，让贡献边界更清楚。")
+        if not any(phrase in answer for phrase in ("结果", "最终", "后来", "提升", "降低", "完成", "上线", "验证", "%")):
+            return ("补充结果依据", "可以再说明结果或验证方式；没有量化数字时，也可以描述如何确认进展。")
+        return ("突出重点", "下次可以先用一句话点明结论，再用这段经历中的行动和结果支撑。")
+
+    observations = []
+    for exchange in exchanges[:3]:
+        focus, tip = suggestion(exchange["answer"])
+        observations.append({
+            "t": round(exchange["t"], 1),
+            "clock": _fmt_ts(exchange["t"]),
+            "question": excerpt(exchange["question"], 140),
+            "quote": excerpt(exchange["answer"]),
+            "focus": focus,
+            "suggestion": tip,
+        })
+
+    count = len(exchanges)
+    summary = (f"本场记录了 {count} 段你的发言。以下建议只依据转写原话，供你回看表达方式。"
+               if count else "本场没有可供回看的候选人转写，暂时无法分析回答内容。")
+    return {
+        "session_id": session.id,
         "role": "candidate",
-        "title": "这次练习的 3 个收获",
-        "disclaimer": "这份报告只属于你，可以导出，也可以删除。",
-    })
-    return report
+        "title": "我的面试表达回看",
+        "summary": summary,
+        "duration": round(max(0.0, (session.ended_at or session.started_at) - session.started_at), 1),
+        "turns": len(session.turns),
+        "answer_segments": count,
+        "observations": observations,
+        "transcript": transcript,
+        "disclaimer": "仅根据本场转写回看表达，不评价能力、人格或诚信，也不评分或排名。转写可能存在遗漏。",
+        "deleted_media": True,
+    }

@@ -19,7 +19,9 @@ from fastapi.staticfiles import StaticFiles
 import config
 from api import router
 
-BASE = Path(__file__).parent
+BASE = Path(__file__).resolve().parent
+CLASSIC_WEB = BASE.parent.parent / "frontend"
+PERSONAL_WEB = BASE.parent.parent / "personal"
 
 app = FastAPI(title="耳语 · 面试官后端", version="0.1")
 
@@ -37,6 +39,14 @@ app.include_router(router)
 _static = BASE / "static"
 if _static.exists():
     app.mount("/static", StaticFiles(directory=str(_static)), name="static")
+
+# 本地联调时两端同源；线上 nginx 仍把企业端放在站点根路径。
+if CLASSIC_WEB.is_dir():
+    app.mount("/classic", StaticFiles(directory=str(CLASSIC_WEB), html=True), name="classic")
+
+# TTC 的真实面试候选人端；与 gerenduan/ 的模拟练习项目分开。
+if PERSONAL_WEB.is_dir():
+    app.mount("/personal", StaticFiles(directory=str(PERSONAL_WEB), html=True), name="personal")
 
 
 @app.get("/")

@@ -111,7 +111,7 @@ function navHtml(active) {
     ? '<button class="btn btn-ghost btn-sm" id="switchRole">切换身份</button>'
     : '';
   const links = [
-    ['#/candidate', '面试者', active === 'candidate'],
+    ['/personal/', '面试者', active === 'candidate'],
     ['#/interviewer', '面试官', active === 'interviewer'],
     ['#/interviewer/analysis', '面试者分析', active === 'analysis']
   ];
@@ -187,6 +187,12 @@ const routes = {};
 function render() {
   clearTimers();
   const segs = (location.hash || '#/').replace(/^#\/?/, '').split('/').filter(Boolean);
+  // 旧版候选人/模拟路由不再承担正式面试；统一进入独立候选人端。
+  if (segs[0] === 'candidate') {
+    const code = segs[1] === 'room' && segs[2] ? '?room=' + encodeURIComponent(segs[2]) : '';
+    location.replace('/personal/' + code);
+    return;
+  }
   let hit = null;
   for (const [pattern, d] of Object.entries(routes)) {
     const names = pattern.replace(/^\//, '').split('/').filter(Boolean);
@@ -225,10 +231,10 @@ routes['/'] = {
       '<div class="wrap hero-center fade-in"><section class="hero">' +
       '<span class="eyebrow">' + I.dog + ' AI 面试搭档</span>' +
       '<h1>一场面试，<span class="accent">两种视角</span>。<br>机器看信号，你来看人。</h1>' +
-      '<p class="lead">候选人只看到一场普通的视频面试。面试官看到实时信号带与追问点提示卡。</p>' +
+      '<p class="lead">候选人在独立页面加入真实房间、查看纪要与个人表达回看；面试官获得实时信号带与追问提示。</p>' +
       '<div class="hero-actions">' +
       '<a class="btn btn-primary btn-lg" href="#/interviewer">' + I.brief + ' 我是面试官</a>' +
-      '<a class="btn btn-outline btn-lg" href="#/candidate">' + I.user + ' 我是面试者</a>' +
+      '<a class="btn btn-outline btn-lg" href="/personal/">' + I.user + ' 我是面试者</a>' +
       '</div>' +
       '</section></div>' +
       '</div>';
@@ -641,7 +647,7 @@ const KIND_TITLE = { probe: '⚠ 追问', upgrade: '↑ 加难度', wrap: '○ �
 routes['/interviewer/room/:id'] = {
   key: 'interviewerRoom',
   render(p) {
-    const joinUrl = location.origin + location.pathname + '#/candidate/room/' + esc(p.id);
+    const joinUrl = location.origin + '/personal/?room=' + encodeURIComponent(p.id);
     return navHtml('interviewer') +
       '<main class="wrap page fade-in">' +
       '<div class="row-between"><div><h1 style="font-size:28px;">面试中</h1>' +
@@ -680,7 +686,7 @@ routes['/interviewer/room/:id'] = {
     connectInterviewer(state);
     setupMinutes(state);
     $('#copyLinkBtn').addEventListener('click', () => {
-      const url = location.origin + location.pathname + '#/candidate/room/' + state.code;
+      const url = location.origin + '/personal/?room=' + encodeURIComponent(state.code);
       if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(() => toast('链接已复制'), () => toast('复制失败'));
       else toast('复制失败：浏览器不支持');
     });
@@ -1065,7 +1071,7 @@ function anaRow(r) {
   const dur = r.duration != null ? (typeof r.duration === 'number' ? fmtTs(r.duration) : String(r.duration)) : '--';
   const ups = r.followUps != null ? r.followUps : (r.points != null ? r.points : 0);
   const rate = Math.round((r.adoptRate != null ? r.adoptRate : 0) * 100) + '%';
-  const del = r.deleted ? ' <span class="chip red" style="margin-left:6px;">已删除</span>' : '';
+  const del = r.deleted ? ' <span class="chip gray" style="margin-left:6px;">本机已标记</span>' : '';
   return '<a class="list-row" href="#/report/' + esc(id) + '" style="text-decoration:none;color:inherit;">' +
     '<div class="kv" style="min-width:120px;"><span class="k">时间</span><span class="v" style="font-size:14px;">' + esc(time) + '</span></div>' +
     '<div class="grow kv"><span class="k">职位</span><span class="v">' + esc(r.title || r.job_title || '未命名职位') + del + '</span></div>' +
@@ -1122,8 +1128,8 @@ function drawReport(p, mode, d) {
     ? (d.conclusion || '你整体表达自然，节奏稳定；建议把“我们”换成“我负责”，并给每个结论配一条证据。')
     : d.conclusion;
   const delNote = d.deleted
-    ? '<span class="chip red">' + I.x + ' 已删除 · 数据将在 7 天后清除</span>'
-    : '<span class="chip gray">删除状态：未删除</span>';
+    ? '<span class="chip gray">' + I.x + ' 已在本机标记</span>'
+    : '<span class="chip gray">服务端数据未删除</span>';
   // 取证诚实度：申请了几次、坐实了几次。"没坐实"也要显示出来，
   // 一个敢说"这条没证实"的系统比永远给结论的系统可信。
   const ver = d.verification && d.verification.requested
@@ -1146,9 +1152,9 @@ function drawReport(p, mode, d) {
     '<div class="replay mt-12"><div class="r-track"><i id="replayBar"></i></div><div class="tiny muted" style="margin-top:8px;">模拟回放该时间点前后 20 秒的问答。</div></div></div>' +
     '<div class="card card-pad mt-16" style="display:flex;flex-direction:column;gap:10px;">' +
     '<div class="row-between"><b>合规与数据</b>' + delNote + '</div>' +
-    '<div class="small muted">' + (d.disclaimer || '本报告基于面试音视频与设备信号生成，仅提供给面试双方本人。候选人可随时申请删除，删除后 7 天内彻底清除。') + '</div>' +
+    '<div class="small muted">' + esc(d.disclaimer || '报告仅供本场面试回看；此页面目前没有服务端删除能力。') + '</div>' +
     '<div class="row" style="justify-content:flex-end;gap:10px;margin-top:4px;">' +
-    '<button class="btn btn-ghost btn-sm" id="delBtn">' + I.x + ' 删除本场数据</button>' +
+    '<button class="btn btn-ghost btn-sm" id="delBtn">' + I.x + ' 仅在本机标记</button>' +
     '<button class="btn btn-ink btn-sm" id="copyBtn">' + I.copy + ' 复制文本</button></div></div>';
   $$('.point-ts').forEach(ts => ts.addEventListener('click', () => replay(ts.dataset.t)));
   $('#copyBtn').addEventListener('click', () => {
@@ -1157,36 +1163,27 @@ function drawReport(p, mode, d) {
     else toast('复制失败：浏览器不支持');
   });
   $('#delBtn').addEventListener('click', () => {
-    markDeleted(p.id); toast('已提交删除申请，7 天后彻底清除'); render();
+    markDeleted(p.id); toast('已在本机标记；服务端数据未删除'); render();
   });
 }
 
 routes['/report/:id'] = {
   key: 'report',
   render(p) {
-    const mode = getRole() === 'candidate' ? 'candidate' : 'interviewer';
     return navHtml('report') +
       '<main class="wrap page page-narrow fade-in">' +
       '<div class="row-between"><div><h1 style="font-size:30px;">面试报告</h1>' +
-      '<p class="panel-sub mt-8" id="repMeta"></p></div>' +
-      '<div class="seg-toggle" id="seg"><button data-m="interviewer">面试官版</button><button data-m="candidate">候选人版</button></div></div>' +
+      '<p class="panel-sub mt-8" id="repMeta"></p></div></div>' +
       '<div class="mt-24" id="repBody">加载中…</div>' +
       '</main>' + footerHtml();
   },
   mount(p) {
-    let mode = getRole() === 'candidate' ? 'candidate' : 'interviewer';
-    const seg = $('#seg');
-    $$('button', seg).forEach(b => b.addEventListener('click', () => {
-      mode = b.dataset.m;
-      load(mode);
-    }));
-    const load = async m => {
-      $$('button', seg).forEach(x => x.classList.toggle('on', x.dataset.m === m));
-      const j = await apiMaybe('/api/sessions/' + encodeURIComponent(p.id) + '/report?role=' + m);
-      const d = j ? mapReport(j, m) : reportData(p.id, m);
-      drawReport(p, m, d);
+    const load = async () => {
+      const j = await apiMaybe('/api/sessions/' + encodeURIComponent(p.id) + '/report?role=interviewer');
+      const d = j ? mapReport(j, 'interviewer') : reportData(p.id, 'interviewer');
+      drawReport(p, 'interviewer', d);
     };
-    load(mode);
+    load();
     const sw = $('#switchRole'); if (sw) sw.addEventListener('click', () => { LS.del('corgi_role'); location.hash = '#/'; render(); });
     function replay(t) {
       const card = $('#replayCard'); card.style.display = '';
@@ -1212,7 +1209,7 @@ function page404() {
 }
 function footerHtml() {
   return '<footer class="footer"><div class="wrap row-between"><div>corgi 面试前端 · 学习 corgi.insure 视觉风格的作品。</div>' +
-    '<div>本页面仅为前端演示，所有人物与数据均为模拟。</div></div></footer>';
+    '<div>示例人物为演示；真实房间数据以服务端为准。</div></div></footer>';
 }
 window.addEventListener('hashchange', render);
 window.addEventListener('DOMContentLoaded', render);

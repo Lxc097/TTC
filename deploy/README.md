@@ -11,17 +11,13 @@
 | Ubuntu + python3 | ✅（部署脚本会装 venv/nginx） |
 | SSH 密钥登录 | ❌ **当前未授权**（`Permission denied (publickey)`） |
 
-## 方式一：授权我的公钥，我全程远程部署
+## 方式一：通过安全渠道授权部署公钥
 
-在云控制台的「远程连接 / Web 终端」里执行：
+如需远程部署，先通过安全渠道取得部署人员的公钥文件，核对指纹后再授权。不要把公钥内容、设备标识、私钥或登录凭据写入仓库。
 
-```bash
-mkdir -p ~/.ssh && chmod 700 ~/.ssh
-echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEzd2uhvybJwGjRU9dxJ4nk54ehZmrQQUHJG54bBoaVM rog@LAPTOP-ARA24944' >> ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
-```
-
-执行完告诉我用的是 `root` 还是 `ubuntu`，我直接接管。
+1. 在目标服务器上创建 ~/.ssh 目录，并将经核验的公钥内容追加到 ~/.ssh/authorized_keys。
+2. 将 ~/.ssh 设置为 700，将 ~/.ssh/authorized_keys 设置为 600。
+3. 部署完成后，按需从 authorized_keys 移除临时授权的公钥。
 
 ## 方式二：你自己跑一条命令
 
@@ -49,7 +45,7 @@ cd /opt/ttc && python3 -m venv .venv && .venv/bin/pip install -r qiyeduan/backen
 
 ## 部署后是什么状态
 
-- nginx 在 80/443 提供 `frontend/` 静态页
+- nginx 在 80/443 提供 `frontend/` 企业端静态页；`/personal/` 反代到同进程托管的独立候选人页
 - `/api/` 和 `/ws/` 反代到本机 `127.0.0.1:8000`（uvicorn，由 `ttc-backend.service` 托管）
 - **默认 `VISION_PROVIDER=mock` + `LLM_ENABLED=0`**：公开链接谁都能点，默认不产生任何费用
 - `.env` 权限 600，不在 git 里
@@ -72,6 +68,8 @@ nginx -t && systemctl reload nginx
 ```
 
 ## 已知限制
+
+**当前不要用真实候选人数据公开部署：**旧 `/api/interviews` 与按会话 ID 查询的报告接口还没有角色鉴权；`/personal/` 的页面分离不能代替服务端权限控制。
 
 1. **服务器在硅谷，演示在国内。** 20 秒视频块 base64 后约 4MB，跨境上传可能 10~30 秒，
    比本地慢很多。**正式比赛演示仍建议跑本机**，服务器上的公开链接用于"发给评委自己试"。

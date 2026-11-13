@@ -54,7 +54,7 @@ def check_facephys() -> None:
     if not key_id or not secret:
         record("凭据", False, "TTC_API_KEY_ID / TTC_API_SECRET 未配置")
         return
-    record("凭据", True, f"key_id={key_id[:4]}***{key_id[-2:]}")
+    record("凭据", True, "已配置（不输出 Key ID）")
 
     code, text = http("GET", f"{base}/api/video/health",
                       headers={"User-Agent": "ttc-verify"})
@@ -96,7 +96,7 @@ def check_llm() -> None:
     if not key:
         record("凭据", False, "LLM_API_KEY 未配置")
         return
-    record("凭据", True, f"{key[:5]}***{key[-4:]}  模型 {config.LLM_MODEL}")
+    record("凭据", True, f"已配置；模型 {config.LLM_MODEL}")
 
     code, text = http("GET", f"{config.LLM_BASE_URL.rstrip('/')}/models",
                       headers={"Authorization": f"Bearer {key}",
@@ -114,7 +114,7 @@ def check_stt(do_asr: bool) -> None:
     if not key:
         record("凭据", False, "STT_API_KEY 未配置")
         return
-    record("凭据", True, f"{key[:8]}***  模型 {config.STT_MODEL}")
+    record("凭据", True, f"已配置；模型 {config.STT_MODEL}")
 
     code, text = http("GET", "https://dashscope.aliyuncs.com/api/v1/models"
                       "?page_no=1&page_size=1",

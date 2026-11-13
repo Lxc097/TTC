@@ -445,11 +445,26 @@ class TestAuditFixes(PipelineCase):
         first = self.hub.session.report
         await self.hub.on_end()
         reports = [m for m in self.iws.msgs if m["type"] == "report_ready"]
+        candidate_reports = [m for m in self.cws.msgs if m["type"] == "report_ready"]
         self.assertEqual(len(reports), 2)
+        self.assertEqual(len(candidate_reports), 2)
         # 走了一次 JSON 序列化，比内容不比身份
         self.assertEqual(reports[0]["report"], first)
         self.assertEqual(reports[1]["report"], first,
                          "第二次必须是同一份，不重建")
+        self.assertEqual(candidate_reports[0]["report"], candidate_reports[1]["report"])
+        self.assertEqual(candidate_reports[1]["report"]["role"], "candidate")
+        self.assertNotIn("hint_stats", candidate_reports[1]["report"])
+
+    async def test_cached_report_still_ends_session(self):
+        session = STORE.start_session(self.room, consent=True, live=True)
+        session.report = {"role": "interviewer", "title": "已有报告"}
+        await self.hub.on_end()
+        self.assertIsNotNone(session.ended_at)
+        self.assertEqual(self.room.status, "ended")
+        ended_at = session.ended_at
+        await self.hub.on_end()
+        self.assertEqual(session.ended_at, ended_at, "重复结束不应重置结束时间")
 
     # ---- 7. 报告里要有取证诚实度 ----
     async def test_report_has_verification_stats(self):
@@ -814,6 +829,27 @@ class TestSessionLifecycle(unittest.TestCase):
         self.assertTrue(s2.consent,
                         "候选人带了授权进来，必须补上，否则视频分析被永久锁死")
         self.assertEqual(room.status, "live")
+
+    def test_candidate_reconnect_can_revoke_consent(self):
+        room = self._room()
+        session = STORE.start_session(room, consent=True, live=True)
+        again = STORE.start_session(room, consent=False, live=True)
+        self.assertIs(again, session)
+        self.assertFalse(session.consent)
+
+    def test_interviewer_reconnect_preserves_candidate_consent(self):
+        room = self._room()
+        session = STORE.start_session(room, consent=True, live=True)
+        STORE.start_session(room, consent=False, live=False)
+        self.assertTrue(session.consent)
+
+    def test_finished_session_cannot_be_reopened(self):
+        room = self._room()
+        session = STORE.start_session(room, consent=True, live=True)
+        STORE.end_session(session)
+        STORE.start_session(room, consent=False, live=True)
+        self.assertEqual(room.status, "ended")
+        self.assertTrue(session.consent)
 
     def test_idempotent(self):
         room = self._room()

@@ -554,15 +554,17 @@ class RoomHub:
                 "reason": "还没有候选人进入，本场未开始",
                 "t": self.server_t()})
             return
+        STORE.end_session(session)
+        await self.stop()        # 等 worker 真正退出，否则长跑泄漏
         if session.report is not None:
             # 幂等：重复点结束就把已有报告再发一遍，不重复生成
             await self.send("interviewer", {
                 "type": "report_ready", "session_id": session.id,
                 "report": session.report})
+            await self.send("candidate", {
+                "type": "report_ready", "session_id": session.id,
+                "report": report_mod.build_candidate_report(session, session.report)})
             return
-
-        STORE.end_session(session)
-        await self.stop()        # 等 worker 真正退出，否则长跑泄漏
 
         base = report_mod.build_report(session)
         await self.send("interviewer", {

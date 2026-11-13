@@ -13,6 +13,17 @@ from ws import get_hub, handle_message
 router = APIRouter()
 
 
+def _candidate_snapshot(room, session, interviewer_online: bool = False) -> dict:
+    """Reconnect state contains conversation minutes, never interviewer hints/signals."""
+    return {
+        "type": "candidate_snapshot",
+        "session_id": session.id if session else None,
+        "status": room.status,
+        "interviewer_online": interviewer_online,
+        "transcript": session.transcript[-80:] if session else [],
+    }
+
+
 # ------------------------------------------------------------ 健康检查
 @router.get("/healthz")
 def healthz() -> dict:
@@ -57,6 +68,18 @@ def get_room(code: str) -> dict:
     }
 
 
+@router.get("/api/rooms/{code}/candidate-report")
+def get_candidate_report(code: str) -> dict:
+    """Return the candidate-facing report only after this room has ended."""
+    room = STORE.get_room(code)
+    if not room:
+        raise HTTPException(404, "房间不存在")
+    session = STORE.get_session(room.session_id) if room.session_id else None
+    if room.status != "ended" or not session or session.ended_at is None:
+        raise HTTPException(409, "面试尚未结束")
+    return report_mod.build_candidate_report(session)
+
+
 @router.post("/api/rooms/{code}/end")
 async def end_room(code: str) -> dict:
     room = STORE.get_room(code)
@@ -82,6 +105,8 @@ def get_report(sid: str, role: str = Query("interviewer")) -> dict:
     session = STORE.get_session(sid)
     if not session:
         raise HTTPException(404, "会话不存在")
+    if session.ended_at is None:
+        raise HTTPException(409, "面试尚未结束")
     if role == "candidate":
         return report_mod.build_candidate_report(session)
     return session.report or report_mod.build_report(session)
@@ -124,6 +149,21 @@ async def room_ws(ws: WebSocket, code: str,
         return
 
     await ws.accept()
+    if role == "candidate" and room.status == "ended":
+        # 候选人刷新结束页时只补发自己的报告，不重新开启房间或接收媒体。
+        session = STORE.get_session(room.session_id) if room.session_id else None
+        if session and session.ended_at is not None:
+            await ws.send_json(_candidate_snapshot(room, session))
+            await ws.send_json({
+                "type": "report_ready",
+                "session_id": session.id,
+                "report": report_mod.build_candidate_report(session),
+            })
+            await ws.close(code=1000)
+        else:
+            await ws.close(code=4004)
+        return
+
     hub = get_hub(room)
     hub.add(role, ws)
 
@@ -149,6 +189,10 @@ async def room_ws(ws: WebSocket, code: str,
     # 面试官刷新或重连时补齐已发生的状态
     if role == "interviewer":
         await hub.send_snapshot()
+    else:
+        session = STORE.get_session(room.session_id) if room.session_id else None
+        await ws.send_json(_candidate_snapshot(
+            room, session, bool(hub.conns.get("interviewer"))))
 
     # 通知对端有新人进来
     peer = "interviewer" if role == "candidate" else "candidate"

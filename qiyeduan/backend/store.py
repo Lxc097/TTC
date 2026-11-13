@@ -98,18 +98,16 @@ class Store:
         """开一场会话。**谁先连上就建** —— 只有面试官也要能记事。
 
         两个关键细节：
-        1. 已存在的会话会被复用；如果新来的一侧带来了 consent=True
-           （候选人进房），要把旧会话的 consent 补上，否则视频分析会被
-           先连上的面试官创建的 consent=False 永久锁死。
+        1. 已存在的会话会被复用；候选人重连时的 consent 以本次选择为准，
+           可以授权也可以撤销。面试官重连不能更改候选人的选择。
         2. 只有候选人进房（live=True）才把房间标成 live，避免面试官一进来
            就显示"面试进行中"。
         """
         existing = (self.sessions.get(room.session_id)
                     if room.session_id else None)
         if existing is not None:
-            if consent and not existing.consent:
-                existing.consent = True
-            if live:
+            if live and existing.ended_at is None:
+                existing.consent = bool(consent)
                 room.status = "live"
             return existing
 
@@ -171,7 +169,8 @@ class Store:
         return None
 
     def end_session(self, session: Session) -> None:
-        session.ended_at = time.time()
+        if session.ended_at is None:
+            session.ended_at = time.time()
         room = self.rooms.get(session.room_code)
         if room:
             room.status = "ended"
