@@ -37,6 +37,7 @@ test('FacePhys V3 request signs presign and process without sending credentials 
       const timestamp = headers.get('x-timestamp') || ''
       assert.equal(headers.get('x-key-id'), config.keyId)
       assert.equal(headers.get('x-signature'), createHmac('sha256', config.secretKey).update(timestamp).digest('base64'))
+      assert.match(headers.get('user-agent') || '', /^Mozilla\/5\.0 /)
     }
     assert.equal(result.source, 'api')
     assert.deepEqual(result.readings.map(reading => reading.heartRateBpm), [72, 74])

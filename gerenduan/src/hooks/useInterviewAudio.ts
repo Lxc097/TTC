@@ -309,7 +309,9 @@ export function useInterviewAudio(options: InterviewAudioOptions = {}) {
         recognitionHintTimerRef.current = null
         recognitionRef.current = null
         if (mounted.current) setIsRecognizing(false)
-        callbacks.current.onRecognitionError?.('语音识别已停止。可以点击麦克风重试，或直接输入文字回答。')
+        // Chrome may end a continuous recognition session after a pause or a
+        // browser-side timeout. This is a normal lifecycle event, not an
+        // error; only explicit recognition errors should show an alert.
         callbacks.current.onRecognitionEnd?.()
       }
       recognitionRef.current = recognition
@@ -423,17 +425,39 @@ export function useInterviewAudio(options: InterviewAudioOptions = {}) {
         utterance.rate = 1
         utterance.pitch = 1
         utterance.volume = 1
-        const voices = window.speechSynthesis.getVoices()
-        const chinese = voices.find(voice => /^zh(?:-CN)?$/i.test(voice.lang))
-          || voices.find(voice => /^zh/i.test(voice.lang))
-        if (chinese) utterance.voice = chinese
+        const selectChineseVoice = () => {
+          const voices = window.speechSynthesis.getVoices()
+          const chinese = voices.find(voice => /^zh(?:-CN)?$/i.test(voice.lang))
+            || voices.find(voice => /^zh/i.test(voice.lang))
+          if (chinese) utterance.voice = chinese
+        }
+        // Some Chromium builds populate voices asynchronously. Waiting briefly
+        // avoids attempting a Chinese utterance before the voice list exists.
+        selectChineseVoice()
         utterance.onstart = started
         utterance.onend = () => { if (run === speechRunRef.current) finishSpeech('ended') }
         utterance.onerror = event => fail(synthesisFailureMessage(event.error))
         speechUtteranceRef.current = utterance
         awaitStart()
         if (window.speechSynthesis.paused) window.speechSynthesis.resume()
-        window.speechSynthesis.speak(utterance)
+        if (window.speechSynthesis.getVoices().length === 0) {
+          let settled = false
+          const onVoicesChanged = () => {
+            if (settled || run !== speechRunRef.current) return
+            settled = true
+            window.speechSynthesis.removeEventListener('voiceschanged', onVoicesChanged)
+            selectChineseVoice()
+            window.speechSynthesis.speak(utterance)
+          }
+          window.speechSynthesis.addEventListener('voiceschanged', onVoicesChanged, { once: true })
+          window.setTimeout(() => {
+            if (settled || run !== speechRunRef.current) return
+            settled = true
+            window.speechSynthesis.removeEventListener('voiceschanged', onVoicesChanged)
+            selectChineseVoice()
+            window.speechSynthesis.speak(utterance)
+          }, 700)
+        } else window.speechSynthesis.speak(utterance)
       } catch {
         fail('无法启动浏览器朗读。请阅读右侧题目并文字作答。')
       }

@@ -33,6 +33,19 @@ export interface InterviewAnswer {
   durationSeconds: number
   inputMode: 'text' | 'voice'
   isFollowUp?: boolean
+  /** A non-diagnostic, per-question observation derived from the selected biometrics source. */
+  reaction?: QuestionReaction
+  /** A concise, evidence-based answer summary returned by DeepSeek or the local fallback. */
+  aiSummary?: string
+  aiSummarySource?: 'deepseek' | 'local'
+}
+
+export interface QuestionReaction {
+  label: string
+  detail: string
+  source: 'facephys' | 'mock' | 'unavailable'
+  heartRateBpm?: number
+  signalQuality?: string
 }
 
 export interface BiometricSample {
@@ -41,6 +54,9 @@ export interface BiometricSample {
   emotion?: string
   emotionConfidence?: number
   signalQuality?: string
+  questionId?: string
+  roundKey?: string
+  reaction?: QuestionReaction
 }
 
 export interface QuestionFeedback {

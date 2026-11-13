@@ -21,6 +21,10 @@ export interface FacePhysAnalysis {
   videoDurationSeconds?: number
 }
 
+// FacePhys is behind a WAF that rejects the default Node.js user agent.
+// Keep this value stable for the presign and process requests; credentials remain server-side.
+const FACEPHYS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
+
 export function getFacePhysConfig(): FacePhysConfig {
   return {
     baseUrl: process.env.FACEPHYS_BASE_URL?.trim() || 'https://www.facephys.com',
@@ -114,18 +118,6 @@ function quality(sqi: number | null): SignalQuality {
   return 'poor'
 }
 
-function surfaceEmotion(data: Record<string, unknown>): BiometricReading['emotion'] {
-  const surface = record(record(data.emotion)?.surface)
-  if (!surface) return null
-  const candidates = Object.entries(surface)
-    .filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]) && entry[1] >= 0 && entry[1] <= 1)
-    .sort((a, b) => b[1] - a[1])
-  if (!candidates.length) return null
-  const [label, confidence] = candidates[0]
-  const labels: Record<string, string> = { neutral: '中性', happy: '愉悦', sad: '低落', angry: '愤怒', fear: '紧张', surprise: '惊讶', disgust: '厌恶' }
-  return { label: labels[label] || label, confidence }
-}
-
 /** Exposes only non-diagnostic metrics used by the panel; never returns raw face video or psychological scores. */
 export function mapFacePhysResponse(payload: unknown, observedAt = Date.now()): FacePhysAnalysis {
   const root = record(payload)
@@ -136,24 +128,36 @@ export function mapFacePhysResponse(payload: unknown, observedAt = Date.now()): 
   // The provider advises discarding physiological estimates below SQI 0.15.
   const usable = sqi === null || sqi >= 0.15
   const hr = usable ? finite(cardiac.hr) : null
-  const emotion = usable ? surfaceEmotion(data) : null
-  const breath = usable && (sqi === null || sqi >= 0.3) ? finite(record(cardiac.hrv)?.breathing_rate) : null
+  // The documented payload places breathing_rate under data; retain the older
+  // cardiac.hrv fallback for compatible providers without fabricating a value.
+  const breath = usable && (sqi === null || sqi >= 0.3)
+    ? finite(data.breathing_rate) ?? finite(record(cardiac.hrv)?.breathing_rate)
+    : null
   const duration = finite(root?.video_duration)
+  const liveness = record(data.liveness)
+  const livenessScore = finite(liveness?.liveness_score) ?? finite(liveness?.score)
+  const isLive = typeof liveness?.is_live === 'boolean' ? liveness.is_live : null
+  const commonMetrics = {
+    ...(sqi === null ? {} : { signalQualityValue: sqi }),
+    ...(livenessScore === null ? {} : { livenessScore }),
+    ...(isLive === null ? {} : { isLive }),
+    ...(breath === null ? {} : { respirationRate: breath }),
+  }
   const entries = Array.isArray(cardiac.hr_list) ? cardiac.hr_list.map(record).filter((value): value is Record<string, unknown> => Boolean(value)) : []
   const lastOffset = Math.max(0, ...entries.map(item => finite(item.ts) ?? 0))
   const readings = entries.map(item => ({
     timestamp: observedAt - (lastOffset - (finite(item.ts) ?? lastOffset)) * 1000,
     source: 'api' as const,
     heartRateBpm: usable ? finite(item.hr) : null,
-    emotion,
+    emotion: null,
     signalQuality: quality(sqi),
-    ...(breath === null ? {} : { extraMetrics: { respirationRate: breath } }),
+    ...(Object.keys(commonMetrics).length ? { extraMetrics: commonMetrics } : {}),
   }))
   if (!readings.length || readings.at(-1)?.heartRateBpm !== hr) {
     readings.push({
       timestamp: observedAt,
-      source: 'api', heartRateBpm: hr, emotion, signalQuality: quality(sqi),
-      ...(breath === null ? {} : { extraMetrics: { respirationRate: breath } }),
+      source: 'api', heartRateBpm: hr, emotion: null, signalQuality: quality(sqi),
+      ...(Object.keys(commonMetrics).length ? { extraMetrics: commonMetrics } : {}),
     })
   }
   return { source: 'api', readings, ...(duration === null ? {} : { videoDurationSeconds: duration }) }
@@ -170,7 +174,7 @@ export async function analyzeFacePhysVideo(
   if (!video.byteLength) throw new Error('视频内容为空。')
   if (!/^video\/(?:mp4|webm)(?:;|$)/i.test(mimeType)) throw new Error('仅支持 MP4 或 WebM 视频。')
   const presign = await fetch(endpoint(config, '/api/v2/video/upload/presign'), {
-    method: 'POST', headers: { ...authHeaders(config), 'Content-Type': 'application/json' },
+    method: 'POST', headers: { ...authHeaders(config), 'Content-Type': 'application/json', 'User-Agent': FACEPHYS_USER_AGENT },
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
   })
   const ticket = await readJson(presign, '预签名', config)
@@ -185,7 +189,7 @@ export async function analyzeFacePhysVideo(
   if (!uploaded.ok) throw new FacePhysError(uploaded.status, statusMessage(uploaded.status, '视频上传') + '。')
   const processed = await fetch(endpoint(config, '/api/v3/video/process'), {
     method: 'POST',
-    headers: { ...authHeaders(config), 'Content-Type': 'application/json' },
+    headers: { ...authHeaders(config), 'Content-Type': 'application/json', 'User-Agent': FACEPHYS_USER_AGENT },
     body: JSON.stringify({ objectKey: ticket.objectKey, capability: 'rppg' }),
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000),
   })

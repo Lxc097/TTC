@@ -5,6 +5,7 @@ import {
   type BiometricReading,
   type BiometricsMode,
 } from '../../services/biometrics';
+import { describeQuestionReaction } from '../../utils/answerInsight';
 import './biometrics.css';
 
 interface BiometricsPanelProps {
@@ -102,6 +103,7 @@ export default function BiometricsPanel({
 
   const latest = readings.at(-1);
   const isMock = activeMode === 'mock';
+  const reaction = describeQuestionReaction(latest ?? null);
 
   const changeMode = (nextMode: BiometricsMode) => {
     setActiveMode(nextMode);
@@ -146,9 +148,9 @@ export default function BiometricsPanel({
               <strong>{latest?.heartRateBpm ?? '--'} <small>BPM</small></strong>
             </div>
             <div className="bio-metric">
-              <div className="bio-metric-label"><Activity size={16} />情绪分类</div>
-              <strong className="bio-emotion">{latest?.emotion?.label ?? '待采样'}</strong>
-              <span>{latest?.emotion ? '置信度 ' + Math.round(latest.emotion.confidence * 100) + '%' : '暂无置信度'}</span>
+              <div className="bio-metric-label"><Activity size={16} />状态提示</div>
+              <strong className="bio-emotion">{reaction.label}</strong>
+              <span>{reaction.heartRateBpm ? reaction.heartRateBpm + ' BPM · 仅供过程复盘' : '等待可用信号'}</span>
             </div>
           </div>
           <HeartRateTrend readings={readings} isMock={isMock} />

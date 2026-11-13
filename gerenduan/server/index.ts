@@ -23,6 +23,18 @@ const facephys = getFacePhysConfig()
 const facephysConfigured = isFacePhysConfigured(facephys)
 const maxVideoBytes = 40 * 1024 * 1024
 
+function safeFacePhysError(error: unknown): string {
+  let raw = error instanceof Error ? error.message : '未知错误'
+  if (facephys.secretKey) raw = raw.replaceAll(facephys.secretKey, '[凭据已隐藏]')
+  if (facephys.keyId) raw = raw.replaceAll(facephys.keyId, '[凭据已隐藏]')
+  return raw
+    .replace(/(?:sk-|ke)[A-Za-z0-9_-]{16,}/g, '[凭据已隐藏]')
+    .replace(/https?:\/\/\S+/gi, '[地址已隐藏]')
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
+    .slice(0, 260)
+}
+
 setInterval(() => {
   const now = Date.now()
   for (const [id, session] of sessions) if (now - session.createdAt > maxAgeMs) sessions.delete(id)
@@ -94,6 +106,21 @@ function questionFromModel(payload: unknown): string | null {
   return question || null
 }
 
+function summaryFromModel(payload: unknown): string | null {
+  if (!isRecord(payload) || !Array.isArray(payload.choices)) return null
+  const first = payload.choices[0] as unknown
+  if (!isRecord(first) || !isRecord(first.message) || typeof first.message.content !== 'string') return null
+  const summary = first.message.content
+    .trim()
+    .replace(/^```(?:text|markdown)?\s*/i, '')
+    .replace(/```$/i, '')
+    .replace(/^[#*\s]+/, '')
+    .replace(/^(总结|回答表现|结论)[：:\s]*/, '')
+    .replace(/\s+/g, ' ')
+    .slice(0, 220)
+  return summary || null
+}
+
 async function generateFollowUp(session: SessionState, question: InterviewQuestion, answer: string, previousPrompt: string): Promise<string> {
   const profile = DIFFICULTY_PROFILES[session.config.difficulty]
   const system = profile.interviewerStyle + ' ' + profile.followUpInstruction
@@ -109,6 +136,22 @@ async function generateFollowUp(session: SessionState, question: InterviewQuesti
     [{ role: 'system', content: system }, { role: 'user', content: user }], 180)
   const result = questionFromModel(response)
   if (!result) throw new Error('硅基流动没有返回有效追问。')
+  return result
+}
+
+async function generateAnswerSummary(session: SessionState, question: InterviewQuestion, answer: string): Promise<string> {
+  const profile = DIFFICULTY_PROFILES[session.config.difficulty]
+  const system = profile.interviewerStyle
+    + ' 你是面试复盘助手。只输出一句简体中文回答表现总结，基于回答中出现的具体信息判断熟悉程度与表达完整度。'
+    + ' 不得做心理、人格、诚信、健康或录用判断，不得引用摄像头或生理信号，不要给分数。'
+  const user = '岗位：' + ROLE_LABELS[session.config.role]
+    + '\n原题：' + question.prompt
+    + '\n面试者回答：' + answer
+    + '\n请用 25-80 字总结该回答体现出的熟悉程度、证据和缺口。'
+  const response = await createChatCompletion(llm,
+    [{ role: 'system', content: system }, { role: 'user', content: user }], 120)
+  const result = summaryFromModel(response)
+  if (!result) throw new Error('硅基流动没有返回有效回答总结。')
   return result
 }
 
@@ -141,7 +184,7 @@ const server = createServer(async (request, response) => {
       json(response, 200, result)
     } catch (error) {
       if (error instanceof FacePhysError) json(response, error.status, { error: error.message })
-      else json(response, 502, { error: 'FacePhys 视频分析暂不可用；请稍后重试或切换演示模式。' })
+      else json(response, 502, { error: 'FacePhys 视频分析暂不可用：' + safeFacePhysError(error) })
     }
     return
   }
@@ -179,6 +222,41 @@ const server = createServer(async (request, response) => {
   if (request.method === 'DELETE' && /^\/api\/interview\/sessions\/[^/]+$/.test(path)) {
     sessions.delete(decodeURIComponent(path.split('/').at(-1) || ''))
     json(response, 200, { closed: true })
+    return
+  }
+
+  if (request.method === 'POST' && path === '/api/interview/answer-summary') {
+    try {
+      const body = await readJson(request)
+      if (!isRecord(body)
+        || typeof body.sessionId !== 'string'
+        || typeof body.questionId !== 'string'
+        || typeof body.answer !== 'string') {
+        json(response, 400, { error: '回答总结请求无效。' })
+        return
+      }
+      if (!configured) {
+        json(response, 503, { error: 'SILICONFLOW_API_KEY 未设置；当前只能使用本地回答总结。' })
+        return
+      }
+      const session = sessions.get(body.sessionId)
+      const question = session?.questions.get(body.questionId)
+      if (!session || !question || Date.now() - session.createdAt > maxAgeMs) {
+        json(response, 404, { error: '面试会话或题目不存在。' })
+        return
+      }
+      const answer = body.answer.trim()
+      if (!answer || answer.length > 5_000) {
+        json(response, 400, { error: '回答内容为空或过长。' })
+        return
+      }
+      const summary = await generateAnswerSummary(session, question, answer)
+      json(response, 200, { mode: 'siliconflow', summary })
+    } catch (error) {
+      if (error instanceof SiliconFlowError) json(response, error.status, { error: error.message })
+      else if (error instanceof Error && error.name === 'TimeoutError') json(response, 504, { error: '硅基流动请求超时；已保留本地回答总结。' })
+      else json(response, 502, { error: '硅基流动回答总结暂不可用；已保留本地回答总结。' })
+    }
     return
   }
 

@@ -9,9 +9,10 @@ import { InterviewHeader } from '../components/interview/room/InterviewHeader'
 import { InterviewSidebar } from '../components/interview/room/InterviewSidebar'
 import { useInterviewAudio } from '../hooks/useInterviewAudio'
 import { INITIAL_INTERVIEW_FLOW, interviewFlowReducer, type InterviewFlowAction } from '../hooks/interviewFlow'
-import { closeInterviewService, requestFollowUp, startInterviewService, type InterviewServiceSession } from '../services/interviewClient'
+import { closeInterviewService, requestFollowUp, startInterviewService, summarizeAnswer, type InterviewServiceSession } from '../services/interviewClient'
 import type { BiometricReading, BiometricsMode } from '../services/biometrics'
-import { DEFAULT_INTERVIEW_CONFIG, type BiometricSample, type InterviewAnswer, type InterviewConfig, type InterviewQuestion, type InterviewRecord } from '../types/interview'
+import { DEFAULT_INTERVIEW_CONFIG, type BiometricSample, type InterviewAnswer, type InterviewConfig, type InterviewQuestion, type InterviewRecord, type QuestionReaction } from '../types/interview'
+import { describeQuestionReaction } from '../utils/answerInsight'
 import { shouldStartAutoSubmit } from '../utils/autoSubmit'
 import { generateInterviewReport } from '../utils/report'
 import { saveInterviewRecord } from '../utils/storage'
@@ -58,10 +59,12 @@ export function InterviewSession() {
   const [notice, setNotice] = useState('')
   const [serviceMode, setServiceMode] = useState<InterviewServiceSession['mode']>('local')
   const [bioMode, setBioMode] = useState<BiometricsMode>('mock')
+  const [liveReaction, setLiveReaction] = useState<QuestionReaction>(() => describeQuestionReaction(null))
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null)
   const startAt = useRef(Date.now())
   const questionStartedAt = useRef(new Date().toISOString())
   const samplesRef = useRef<BiometricSample[]>([])
+  const liveReactionRef = useRef<QuestionReaction>(describeQuestionReaction(null))
   const modeRef = useRef<BiometricsMode>('mock')
   const sessionRef = useRef<InterviewServiceSession | null>(null)
   const finishedRef = useRef(false)
@@ -180,6 +183,9 @@ export function InterviewSession() {
   }, [beginListening, dispatchFlow, prompt, resetVoiceTiming, speak, stopMicrophone, stopRecognition, stopSpeech])
 
   useEffect(() => {
+    const emptyReaction = describeQuestionReaction(null)
+    liveReactionRef.current = emptyReaction
+    setLiveReaction(emptyReaction)
     playQuestion()
     return () => { speechRunRef.current += 1; stopSpeech(); stopRecognition() }
   }, [roundKey, playQuestion, stopRecognition, stopSpeech])
@@ -242,6 +248,7 @@ export function InterviewSession() {
       startedAt: questionStartedAt.current, answeredAt,
       durationSeconds: Math.max(0, Math.round((Date.parse(answeredAt) - Date.parse(questionStartedAt.current)) / 1000)),
       inputMode: skip ? 'text' : inputMode, isFollowUp,
+      reaction: liveReactionRef.current,
     }
     const next = [...answersRef.current, item]
     answersRef.current = next
@@ -254,9 +261,16 @@ export function InterviewSession() {
       return
     }
     const session = sessionRef.current || { id: 'local-prep', mode: 'local' as const, config, questions }
-    void requestFollowUp({ session, question, answer: text, followUpCount: state.followUpCount, previousPrompt: state.followUpPrompt || undefined })
-      .then(result => {
+    const summaryPromise = summarizeAnswer({ session, question, answer: text })
+    const followUpPromise = requestFollowUp({ session, question, answer: text, followUpCount: state.followUpCount, previousPrompt: state.followUpPrompt || undefined })
+    void Promise.all([summaryPromise, followUpPromise])
+      .then(([summary, result]) => {
         if (finishedRef.current) return
+        const completedItem = { ...item, aiSummary: summary.summary, aiSummarySource: summary.mode === 'siliconflow' ? 'deepseek' as const : 'local' as const }
+        const withSummary = answersRef.current.map(candidate => candidate === item ? completedItem : candidate)
+        answersRef.current = withSummary
+        setAnswers(withSummary)
+        if (summary.notice) setNotice(summary.notice)
         if (session.mode === 'siliconflow' && result.mode === 'local') {
           // Future rounds must stay local after a remote failure: the proxy's count is no longer in sync.
           sessionRef.current = { ...session, mode: 'local' }
@@ -267,13 +281,13 @@ export function InterviewSession() {
         if (result.prompt) {
           questionStartedAt.current = new Date().toISOString()
           dispatchFlow({ type: 'FOLLOW_UP', prompt: result.prompt })
-        } else if (state.index + 1 >= questions.length) finish(next)
+        } else if (state.index + 1 >= questions.length) finish(withSummary)
         else { questionStartedAt.current = new Date().toISOString(); dispatchFlow({ type: 'NEXT_QUESTION' }) }
       })
       .catch(() => {
         if (finishedRef.current) return
         setNotice('追问服务暂不可用，已进入下一题。')
-        if (state.index + 1 >= questions.length) finish(next)
+        if (state.index + 1 >= questions.length) finish(answersRef.current)
         else { questionStartedAt.current = new Date().toISOString(); dispatchFlow({ type: 'NEXT_QUESTION' }) }
       })
   }
@@ -324,10 +338,14 @@ export function InterviewSession() {
     }
   }
   const onReading = (reading: BiometricReading) => {
+    const reaction = describeQuestionReaction(reading)
+    liveReactionRef.current = reaction
+    setLiveReaction(reaction)
     samplesRef.current = [...samplesRef.current.slice(-499), {
       timestamp: new Date(reading.timestamp).toISOString(), heartRateBpm: reading.heartRateBpm ?? undefined,
-      emotion: reading.emotion?.label, emotionConfidence: reading.emotion?.confidence,
-      signalQuality: reading.signalQuality,
+      emotion: reading.source === 'mock' ? reading.emotion?.label : undefined,
+      emotionConfidence: reading.source === 'mock' ? reading.emotion?.confidence : undefined,
+      signalQuality: reading.signalQuality, questionId: currentQuestion?.id, roundKey, reaction,
     }]
   }
   const onModeChange = (mode: BiometricsMode) => {
@@ -343,7 +361,7 @@ export function InterviewSession() {
     <div className="room-progress" aria-label="面试进度"><span style={{ width: Math.min(100, (flow.index + (flow.followUpPrompt ? 0.5 : 0)) / questions.length * 100) + '%' }} /></div>
     <div className="room-workspace">
       <AIStage phase={flow.phase} prompt={prompt} number={flow.index + 1} ttsAnalyser={ttsAnalyser} micAnalyser={micAnalyser} onReplay={() => playQuestion(true)} onVideoElement={setVideoElement} />
-      <InterviewSidebar number={flow.index + 1} total={questions.length} prompt={prompt} isFollowUp={Boolean(flow.followUpPrompt)} answers={answers} draft={draft} interim={interim} cameraStatus={camera.status} micStatus={micStatus} micLevel={micLevel} notice={visibleNotices.join(' ')} />
+      <InterviewSidebar number={flow.index + 1} total={questions.length} prompt={prompt} isFollowUp={Boolean(flow.followUpPrompt)} answers={answers} draft={draft} interim={interim} cameraStatus={camera.status} micStatus={micStatus} micLevel={micLevel} notice={visibleNotices.join(' ')} reaction={liveReaction} />
     </div>
     <div className="room-service-line" role="status">{serviceMode === 'siliconflow' ? '硅基流动 · DeepSeek 个性化出题与动态追问' : '本地题库与规则追问 · 演示模式'} · {ttsSupported ? '浏览器朗读可尝试' : '文字题目'} · {speechSupported ? (isRecognizing ? '浏览器转写已启动' : '浏览器转写可尝试') : '语音转写不可用'} · 文字回答始终可用</div>
     <details className="room-bio"><summary>生理信号观察 {bioMode === 'mock' ? '· 演示数据' : '· FacePhys 分段分析'}</summary><BiometricsPanel mode={bioMode} consent={deviceChoices.consent} videoElement={videoElement} onReading={onReading} onModeChange={onModeChange} /></details>

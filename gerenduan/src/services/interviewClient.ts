@@ -2,6 +2,7 @@ import { DIFFICULTY_PROFILES } from '../data/difficultyProfiles'
 import type { InterviewConfig, InterviewQuestion } from '../types/interview'
 import { pickFollowUp } from './interviewEngine'
 import { createQuestionPlan } from './interviewEngine'
+import { localAnswerSummary } from '../utils/answerInsight'
 
 export type InterviewServiceMode = 'siliconflow' | 'local'
 
@@ -25,6 +26,18 @@ export interface FollowUpRequest {
 export interface FollowUpResult {
   prompt: string | null
   mode: InterviewServiceMode
+  notice?: string
+}
+
+export interface AnswerSummaryRequest {
+  session: InterviewServiceSession
+  question: InterviewQuestion
+  answer: string
+}
+
+export interface AnswerSummaryResult {
+  summary: string
+  mode: 'siliconflow' | 'local'
   notice?: string
 }
 
@@ -124,6 +137,34 @@ export async function requestFollowUp(request: FollowUpRequest): Promise<FollowU
     return { prompt: data.prompt.trim(), mode: 'siliconflow' }
   } catch {
     return localFollowUp(request, '连接 AI 追问服务失败，已切换本地追问规则。')
+  }
+}
+
+/** Summarise answer content through the proxy; the local result is deterministic and explainable. */
+export async function summarizeAnswer(request: AnswerSummaryRequest): Promise<AnswerSummaryResult> {
+  const answer = request.answer.trim()
+  if (!answer) return { summary: localAnswerSummary(answer), mode: 'local' }
+  if (request.session.mode === 'local') return { summary: localAnswerSummary(answer), mode: 'local' }
+  try {
+    const response = await fetch('/api/interview/answer-summary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: request.session.id, questionId: request.question.id, answer }),
+    })
+    if (!response.ok) {
+      return {
+        summary: localAnswerSummary(answer),
+        mode: 'local',
+        notice: (await readPublicError(response)) || 'DeepSeek 回答总结暂不可用，已使用本地规则。',
+      }
+    }
+    const data = await response.json() as { summary?: unknown; mode?: unknown }
+    if (typeof data.summary !== 'string' || !data.summary.trim()) {
+      return { summary: localAnswerSummary(answer), mode: 'local', notice: 'DeepSeek 未返回有效回答总结，已使用本地规则。' }
+    }
+    return { summary: data.summary.trim(), mode: 'siliconflow' }
+  } catch {
+    return { summary: localAnswerSummary(answer), mode: 'local', notice: '连接 DeepSeek 失败，已使用本地回答总结。' }
   }
 }
 
