@@ -1,0 +1,160 @@
+"""内存状态仓库。
+
+黑客松不需要数据库：一个 dict + 一把锁就够。
+重启即清空 —— 这正好也是"面试结束即删除"的合规叙事。
+"""
+from __future__ import annotations
+
+import random
+import string
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Optional
+
+import config
+from engine import Baseline, HintDraft, PhysioSample, Turn
+
+
+def _room_code() -> str:
+    # 去掉容易看错的 0/O/1/I
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "".join(random.choice(alphabet) for _ in range(6))
+
+
+@dataclass
+class Hint:
+    id: str
+    turn_id: int
+    kind: str
+    text: str
+    why: str
+    t: float
+    action: Optional[str] = None   # used | ignored | None
+
+
+@dataclass
+class Session:
+    id: str
+    room_code: str
+    job_title: str
+    started_at: float
+    ended_at: Optional[float] = None
+    consent: bool = False
+    turns: list[Turn] = field(default_factory=list)
+    hints: list[Hint] = field(default_factory=list)
+    samples: list[PhysioSample] = field(default_factory=list)
+    report: Optional[dict] = None
+
+    @property
+    def adopt_rate(self) -> float:
+        acted = [h for h in self.hints if h.action]
+        if not acted:
+            return 0.0
+        return sum(1 for h in self.hints if h.action == "used") / len(acted)
+
+
+@dataclass
+class Room:
+    code: str
+    job_title: str
+    questions: list[str]
+    created_at: float
+    status: str = "waiting"          # waiting | live | ended
+    session_id: Optional[str] = None
+    baseline: Baseline = field(default_factory=Baseline)
+    last_hint_t: float = -1e9
+    current_turn: Optional[Turn] = None
+
+
+class Store:
+    def __init__(self) -> None:
+        self.rooms: dict[str, Room] = {}
+        self.sessions: dict[str, Session] = {}
+
+    # ---------- 房间 ----------
+    def create_room(self, job_title: str, questions: list[str]) -> Room:
+        code = _room_code()
+        while code in self.rooms:
+            code = _room_code()
+        room = Room(code=code, job_title=job_title,
+                    questions=questions, created_at=time.time())
+        self.rooms[code] = room
+        return room
+
+    def get_room(self, code: str) -> Optional[Room]:
+        return self.rooms.get(code.upper())
+
+    # ---------- 会话 ----------
+    def start_session(self, room: Room, consent: bool) -> Session:
+        if room.session_id:
+            existing = self.sessions.get(room.session_id)
+            if existing:
+                return existing
+        s = Session(
+            id=uuid.uuid4().hex[:12],
+            room_code=room.code,
+            job_title=room.job_title,
+            started_at=time.time(),
+            consent=consent,
+        )
+        self.sessions[s.id] = s
+        room.session_id = s.id
+        room.status = "live"
+        return s
+
+    def get_session(self, sid: str) -> Optional[Session]:
+        return self.sessions.get(sid)
+
+    def add_hint(self, session: Session, draft: HintDraft, t: float) -> Hint:
+        h = Hint(id=uuid.uuid4().hex[:8], turn_id=len(session.turns),
+                 kind=draft.kind, text=draft.text, why=draft.why, t=t)
+        session.hints.append(h)
+        return h
+
+    def set_feedback(self, hint_id: str, action: str) -> Optional[Hint]:
+        for s in self.sessions.values():
+            for h in s.hints:
+                if h.id == hint_id:
+                    h.action = action
+                    return h
+        return None
+
+    def end_session(self, session: Session) -> None:
+        session.ended_at = time.time()
+        room = self.rooms.get(session.room_code)
+        if room:
+            room.status = "ended"
+
+    # ---------- 面试官侧列表 ----------
+    def list_interviews(self) -> list[dict]:
+        """注意：这里列的是**场次**，不是候选人排名。
+
+        永远不要在这里加 score / rank / 排序权重 ——
+        排名的下一步一定是自动淘汰，那会让整个项目的合规叙事崩掉。
+        """
+        rows = []
+        for s in sorted(self.sessions.values(), key=lambda x: x.started_at,
+                        reverse=True):
+            rows.append({
+                "session_id": s.id,
+                "job_title": s.job_title,
+                "started_at": s.started_at,
+                "duration": (s.ended_at or time.time()) - s.started_at,
+                "turns": len(s.turns),
+                "points": len(s.hints),
+                "adopt_rate": round(s.adopt_rate, 3),
+                "consent": s.consent,
+            })
+        return rows
+
+
+STORE = Store()
+
+
+def default_questions() -> list[str]:
+    return [
+        "请介绍一个你认为最有代表性的项目。",
+        "这个项目里最难的技术问题是什么，你怎么解决的？",
+        "讲一个你失败或遗憾的项目。",
+    ]
