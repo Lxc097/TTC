@@ -14,21 +14,24 @@
 
 ```
 TTC/
-├── backend/   面试官后端（FastAPI，已跑通全链路）
-└── docs/      方案文档与网页端功能梳理
+├── qiyeduan/          企业端（面试官侧）
+│   ├── backend/       FastAPI 后端，已跑通全链路
+│   └── docs/          双边方案与网页端功能梳理
+├── README.md
+└── .gitignore
 ```
 
 ## 快速开始
 
 ```bash
-cd backend
+cd qiyeduan/backend
 pip install -r requirements.txt
 set VISION_PROVIDER=mock
 uvicorn main:app --reload --port 8000
 ```
 
 打开 <http://127.0.0.1:8000> 是自测台，不用等前端就能走完整条链路。
-细节见 [backend/README.md](backend/README.md)。
+细节见 [qiyeduan/backend/README.md](qiyeduan/backend/README.md)。
 
 ## 三条不能破的规则
 

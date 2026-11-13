@@ -10,7 +10,7 @@
 ## 1. 跑起来（3 分钟）
 
 ```bash
-cd backend
+cd qiyeduan/backend
 pip install -r requirements.txt
 
 # demo 用假数据（推荐先跑这个）
