@@ -1,0 +1,45 @@
+{
+  "name": "tianjing-practice-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n WEB,API -c blue,green \"vite --host 127.0.0.1\" \"node --env-file-if-exists=.env.local --watch --import tsx server/index.ts\"",
+    "build": "tsc -b && vite build",
+    "build:formal": "tsc -b && vite build --base=/ai-interview/",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/interviewLogic.test.ts tests/siliconflow.test.ts tests/facephys.test.ts",
+    "smoke:siliconflow": "node --import tsx scripts/siliconflow-smoke.ts",
+    "lint": "eslint .",
+    "preview": "vite preview --host 127.0.0.1",
+    "api": "node --env-file-if-exists=.env.local --import tsx server/index.ts",
+    "api:formal": "node --env-file-if-exists=../qiyeduan/backend/.env --import tsx server/index.ts"
+  },
+  "dependencies": {
+    "lucide-react": "^1.72.0",
+    "mammoth": "^1.13.0",
+    "pdfjs-dist": "^6.5.438",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router-dom": "^7.18.5",
+    "recharts": "^3.10.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "concurrently": "^10.0.7",
+    "eslint": "^10.14.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "globals": "^17.14.0",
+    "tailwindcss": "^4.3.5",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.2",
+    "vite": "^8.3.8"
+  }
+}

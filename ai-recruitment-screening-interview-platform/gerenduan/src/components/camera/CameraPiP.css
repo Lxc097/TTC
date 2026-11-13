@@ -1,0 +1,17 @@
+.camera-pip { position: absolute; right: 18px; bottom: 18px; z-index: 5; width: 200px; max-width: calc(100% - 32px); aspect-ratio: 16 / 9; border: 2px solid rgba(255,255,255,.85); border-radius: 13px; background: #17233b; box-shadow: 0 14px 34px rgba(14,26,47,.28); transition: width .22s ease, box-shadow .22s ease; }
+.camera-pip--expanded { width: min(420px, calc(100% - 32px)); box-shadow: 0 20px 55px rgba(14,26,47,.35); }
+.camera-pip .camera-preview { height: 100%; border-radius: 11px; }
+.camera-pip .camera-preview__empty { gap: 4px; padding: 8px; font-size: 10px; }
+.camera-pip .camera-preview__empty-icon { height: 25px; width: 25px; border: 0; border-radius: 8px; }
+.camera-pip .camera-preview__empty-icon svg { width: 15px; height: 15px; }
+.camera-pip .camera-preview__empty small, .camera-pip .camera-preview__live { display: none; }
+.camera-pip__top { position: absolute; top: 7px; left: 7px; right: 7px; display: flex; justify-content: space-between; align-items: flex-start; gap: 4px; pointer-events: none; }
+.camera-pip__state { display: inline-flex; align-items: center; gap: 4px; background: rgba(17,28,49,.75); color: #c5d0e1; border-radius: 5px; padding: 5px 6px; font-size: 9px; white-space: nowrap; }
+.camera-pip__state.is-live::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: #38d9a8; }
+.camera-pip__controls { display: flex; gap: 3px; pointer-events: auto; }
+.camera-pip__controls button { display: grid; place-items: center; border: 0; border-radius: 5px; color: #fff; background: rgba(17,28,49,.75); height: 23px; width: 23px; padding: 0; }
+.camera-pip__controls button:hover { background: rgba(72,100,190,.9); }
+.camera-pip__controls button:disabled { opacity: .45; }
+.camera-pip__error { position: absolute; bottom: calc(100% + 7px); right: 0; width: max-content; max-width: min(280px,90vw); background: #fff5f3; color: #a33d43; border-radius: 8px; border: 1px solid #f7d6d1; padding: 7px 9px; font-size: 11px; line-height: 1.4; }
+@media (max-width: 767px) { .camera-pip { width: 112px; right: 10px; bottom: 10px; border-radius: 9px; } .camera-pip--expanded { width: min(330px, calc(100% - 20px)); } .camera-pip .camera-preview { border-radius: 7px; } .camera-pip__top { top: 4px; left: 4px; right: 4px; } .camera-pip__state { display: none; } .camera-pip__controls { margin-left: auto; gap: 2px; } .camera-pip__controls button { height: 20px; width: 20px; } .camera-pip__controls svg { width: 12px; height: 12px; } .camera-pip .camera-preview__empty { justify-content: flex-end; padding-bottom: 7px; font-size: 8px; } .camera-pip .camera-preview__empty-icon { display: none; } }
+@media (prefers-reduced-motion: reduce) { .camera-pip { transition: none; } }

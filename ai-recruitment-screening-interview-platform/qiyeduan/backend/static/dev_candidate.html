@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>后端自测台 · 耳语</title>
+<style>
+  :root { --bg:#111214; --panel:#181a1d; --line:#2a2d31; --text:#e6e6e6;
+          --dim:#8a8f96; --blue:#3b6ea5; --amber:#c08a3e; --red:#b3453e; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  header { padding:12px 18px; border-bottom:1px solid var(--line);
+           display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; letter-spacing:.5px; }
+  .badge { font-size:12px; color:var(--dim); border:1px solid var(--line);
+           padding:2px 8px; border-radius:20px; }
+  .wrap { display:grid; grid-template-columns:1fr 1fr; gap:14px; padding:14px; }
+  .col { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+         padding:14px; display:flex; flex-direction:column; gap:10px; }
+  .col h2 { font-size:13px; margin:0; color:var(--dim); font-weight:600;
+            text-transform:uppercase; letter-spacing:1px; }
+  button { background:#23262a; color:var(--text); border:1px solid var(--line);
+           padding:7px 13px; border-radius:7px; cursor:pointer; font-size:13px; }
+  button:hover { background:#2c3035; }
+  button.primary { background:var(--blue); border-color:var(--blue); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  #band { height:6px; background:#2a2a2e; border-radius:3px; transition:background .4s; }
+  .log { height:190px; overflow:auto; font-size:12px; font-family:Consolas,monospace;
+         background:#0d0e10; border-radius:7px; padding:9px; color:#9aa0a6;
+         white-space:pre-wrap; }
+  .hint { border-left:3px solid var(--amber); background:#1f1a12;
+          padding:9px 11px; border-radius:0 7px 7px 0; font-size:13px; }
+  .hint b { display:block; font-size:15px; margin-bottom:3px; }
+  .hint small { color:var(--dim); }
+  label { font-size:12px; color:var(--dim); display:flex; justify-content:space-between; gap:8px; }
+  input[type=range] { width:100%; }
+  .code { font:600 26px/1 Consolas,monospace; letter-spacing:4px; color:#fff; }
+  .muted { color:var(--dim); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>耳语 · 后端自测台</h1>
+  <span class="badge" id="prov">provider: ?</span>
+  <button class="primary" id="mk">创建房间</button>
+  <span class="code" id="code">------</span>
+  <button id="conn" disabled>连接双方</button>
+  <button id="end" disabled>结束面试 → 看报告</button>
+</header>
+
+<div class="wrap">
+  <div class="col">
+    <h2>面试官视图（接收端）</h2>
+    <div id="band"></div>
+    <div class="row">
+      <span class="muted" id="stat">未连接</span>
+    </div>
+    <div id="hintbox"></div>
+    <div class="log" id="ilog"></div>
+  </div>
+
+  <div class="col">
+    <h2>候选人视图（发送端 · 模拟）</h2>
+    <canvas id="cv" width="160" height="120" style="display:none"></canvas>
+    <div class="row">
+      <button id="frames" disabled>开始上报画面</button>
+      <button id="tstart" disabled>开始回答</button>
+      <button id="tend" disabled>回答结束</button>
+    </div>
+    <div>
+      <label>停顿占比 <span id="v1">0.8</span></label>
+      <input type="range" id="s1" min="0" max="1" step="0.1" value="0.8">
+      <label>视线离屏 <span id="v4">0.2</span></label>
+      <input type="range" id="s4" min="0" max="1" step="0.1" value="0.2">
+      <label>语速下降 <span id="v3">0.1</span></label>
+      <input type="range" id="s3" min="0" max="1" step="0.1" value="0.1">
+      <label>填充词密度 <span id="v2">0.3</span></label>
+      <input type="range" id="s2" min="0" max="1" step="0.1" value="0.3">
+    </div>
+    <div class="log" id="clog"></div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const log = (el, s) => { el.textContent += s + "\n"; el.scrollTop = el.scrollHeight; };
+const ilog = $("#ilog"), clog = $("#clog");
+
+let code = null, iws = null, cws = null, t0 = 0, frameTimer = null, turnOpen = false;
+
+// ---- 配置 ----
+fetch("/api/config").then(r => r.json()).then(c => {
+  $("#prov").textContent = "provider: " + c.vision_provider +
+    " · baseline " + c.baseline_seconds + "s";
+});
+
+// ---- 建房间 ----
+$("#mk").onclick = async () => {
+  const r = await fetch("/api/rooms", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ job_title: "后端联调" })
+  });
+  const d = await r.json();
+  code = d.code;
+  $("#code").textContent = code;
+  $("#conn").disabled = false;
+  log(ilog, "房间已创建 " + code);
+};
+
+// ---- 双端连接 ----
+$("#conn").onclick = () => {
+  if (!code) return;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const base = `${proto}://${location.host}/ws/room/${code}`;
+
+  iws = new WebSocket(`${base}?role=interviewer`);
+  iws.onopen = () => log(ilog, "面试官已连接");
+  iws.onmessage = e => onInterviewer(JSON.parse(e.data));
+  iws.onclose = () => log(ilog, "面试官连接关闭");
+
+  cws = new WebSocket(`${base}?role=candidate&consent=1`);
+  cws.onopen = () => {
+    t0 = performance.now();
+    log(clog, "候选人已连接（已授权）");
+    ["#frames", "#tstart", "#end"].forEach(s => { $(s).disabled = false; });
+  };
+  cws.onmessage = e => log(clog, "← " + e.data.slice(0, 160));
+  cws.onclose = () => log(clog, "候选人连接关闭");
+};
+
+const T = () => Math.round(((performance.now() - t0) / 1000) * 100) / 100;
+const send = (ws, obj) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); };
+
+// ---- 面试官接收 ----
+const COLORS = ["#2a2a2e", "#3b6ea5", "#c08a3e", "#b3453e"];
+function bandColor(z, quality) {
+  if (quality < 0.5) return "#3a3d42";
+  if (z > 2.0) return COLORS[3];
+  if (z > 1.5) return COLORS[2];
+  if (z > 0.8) return COLORS[1];
+  return COLORS[0];
+}
+
+function onInterviewer(m) {
+  if (m.type === "signal") {
+    $("#band").style.background = bandColor(m.load_z, m.quality);
+    $("#stat").textContent =
+      `t=${m.t}s  load_z=${m.load_z}  hr=${m.hr}  q=${m.quality}` +
+      (m.baseline_ready ? "" : `  · 建立基线中 ${m.baseline_remaining}s`);
+  } else if (m.type === "hint") {
+    renderHint(m);
+    log(ilog, `⚠ HINT [${m.kind}] ${m.text}  (${m.why})`);
+  } else if (m.type === "turn_summary") {
+    log(ilog, `轮次 ${m.turn_id} 结束  peak=${m.phys_peak} mean=${m.phys_mean} beh=${m.beh_anomaly}`);
+  } else if (m.type === "hint_ack") {
+    log(ilog, `反馈 ${m.id} → ${m.action}  采纳率=${m.adopt_rate}`);
+  } else if (m.type === "report_ready") {
+    log(ilog, "报告就绪 → " + JSON.stringify(m.report.points, null, 1));
+    $("#stat").textContent = "报告就绪：" + m.report.summary;
+  } else if (m.type === "peer") {
+    log(ilog, `对端 ${m.role} ${m.state}`);
+  } else {
+    log(ilog, "← " + JSON.stringify(m).slice(0, 140));
+  }
+}
+
+function renderHint(m) {
+  const d = document.createElement("div");
+  d.className = "hint";
+  d.innerHTML = `<b>⚠ ${m.text}</b><small>${m.why} · ${m.t}s</small>
+    <div class="row" style="margin-top:6px">
+      <button data-a="used">用掉</button>
+      <button data-a="ignored">忽略</button>
+    </div>`;
+  d.querySelectorAll("button").forEach(b => b.onclick = () => {
+    send(iws, { type: "hint_feedback", hint_id: m.id, action: b.dataset.a, t: m.t });
+    d.style.opacity = .45;
+  });
+  $("#hintbox").appendChild(d);
+  setTimeout(() => { d.style.opacity = .45; }, 3000);  // 3 秒后自动淡化
+}
+
+// ---- 候选人发送 ----
+$("#frames").onclick = () => {
+  if (frameTimer) { clearInterval(frameTimer); frameTimer = null;
+    $("#frames").textContent = "开始上报画面"; return; }
+  const cv = $("#cv"), ctx = cv.getContext("2d");
+  $("#frames").textContent = "停止上报";
+  frameTimer = setInterval(() => {
+    // 画点噪声当"人脸"，让 jpeg 有真实体积
+    const g = ctx.createLinearGradient(0, 0, 160, 120);
+    g.addColorStop(0, `hsl(${(Date.now() / 40) % 360},30%,45%)`);
+    g.addColorStop(1, "#202225");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, 160, 120);
+    ctx.fillStyle = "rgba(230,220,200,.85)";
+    ctx.beginPath(); ctx.arc(80, 55, 26, 0, 7); ctx.fill();
+    send(cws, { type: "frame", t: T(), img: cv.toDataURL("image/jpeg", 0.6) });
+  }, 200);   // 5fps
+};
+
+$("#tstart").onclick = () => {
+  turnOpen = true;
+  send(cws, { type: "turn_start", t: T() });
+  log(clog, "→ 开始回答 t=" + T());
+};
+
+$("#tend").onclick = () => {
+  if (!turnOpen) { log(clog, "先开始一次回答"); return; }
+  turnOpen = false;
+  const beh = {
+    pause_ratio: +$("#s1").value,
+    filler_density: +$("#s2").value,
+    speech_rate_drop: +$("#s3").value,
+    gaze_off: +$("#s4").value,
+  };
+  send(cws, { type: "turn_end", t: T(), transcript: "这里是一段模拟回答的文本。", beh });
+  log(clog, "→ 回答结束 " + JSON.stringify(beh));
+};
+
+$("#end").onclick = () => {
+  if (frameTimer) { clearInterval(frameTimer); frameTimer = null; }
+  send(iws, { type: "end", t: T() });
+  log(ilog, "→ 结束面试");
+};
+
+// 滑块显示
+["1", "2", "3", "4"].forEach(i => {
+  $("#s" + i).oninput = e => $("#v" + i).textContent = e.target.value;
+});
+</script>
+</body>
+</html>
