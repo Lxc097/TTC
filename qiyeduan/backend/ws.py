@@ -62,6 +62,7 @@ class RoomHub:
         self.token_warned = False          # 余额告警只发一次
         self.stt_busy = False
         self.stt_warned = False
+        self.stt_fail = 0
 
     def server_t(self) -> float:
         """服务端权威时间轴（相对会话开始的秒数）。
@@ -310,7 +311,18 @@ class RoomHub:
             self.stt_busy = False
 
         if text:
+            print(f"[stt] role={role} bytes={len(audio)} fmt={fmt} "
+                  f"-> {text[:40]!r}", flush=True)
             await self.on_stt(role, text, t, final=True)
+        else:
+            # 转写没出字：把真实原因回给发音频的那一端，否则前端只能干等
+            self.stt_fail += 1
+            reason = getattr(STT, "last_error", "") or "ASR 未返回文本"
+            print(f"[stt] role={role} bytes={len(audio)} fmt={fmt} "
+                  f"-> FAILED {reason[:100]}", flush=True)
+            if self.stt_fail <= 3:
+                await self.broadcast({"type": "status", "state": "stt_failed",
+                                      "reason": str(reason)[:140], "t": t})
 
     # ---------------- 会议纪要（语音转写） ----------------
     async def on_stt(self, role: str, text: str, t: float,

@@ -790,6 +790,9 @@ function handleIntMsg(state, m) {
     if (m.state === 'no_consent') {
       const b = $('#signalBand'); if (b) b.style.display = 'none';
       const st = $('#intStatus'); if (st) st.textContent = '本次仅语音，不做画面分析';
+    } else if (m.state === 'stt_failed') {
+      const lbl = $('#sttState');
+      if (lbl) lbl.textContent = '转写失败：' + (m.reason || '未知原因');
     } else if (m.state === 'degraded') {
       const n = $('#bandNote'); if (n) n.textContent = '分析已降级 · 信号仅供参考';
       $$('#signalBand .bar i').forEach(i => { i.className = 'xstriped'; });
@@ -904,7 +907,8 @@ function blobToB64(blob) {
 }
 // 录音分片上传：每 4 秒一段独立音频，发给后端做 ASR。
 // 不用浏览器自带的 SpeechRecognition —— 它直连 Google，国内不可用。
-function makeAudioCapturer(state, chunkMs) {
+function makeAudioCapturer(state, chunkMs, onEvent) {
+  const emit = (ev) => { try { onEvent && onEvent(ev); } catch (e) {} };
   const CHUNK_MS = chunkMs || 4000;
   let media = null, rec = null, on = false;
   const MIMES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
@@ -930,13 +934,21 @@ function makeAudioCapturer(state, chunkMs) {
   async function loop() {
     while (on) {
       let blob = null;
-      try { blob = await recordOnce(); } catch (e) { break; }
+      try { blob = await recordOnce(); } catch (e) {
+        emit({ type: 'error', msg: (e && e.name) || '录制失败' });
+        break;
+      }
       if (!on) break;
       const ws = state.ws;
-      if (!blob || blob.size < 2000) continue;          // 太小基本是静音
-      if (!ws || ws.readyState !== 1 || state.ended) continue;
+      if (!blob || blob.size < 2000) { emit({ type: 'skip', size: blob ? blob.size : 0 }); continue; }
+      if (!ws || ws.readyState !== 1 || state.ended) {
+        emit({ type: 'error', msg: 'WS 未连接，录音没发出去' });
+        continue;
+      }
       const b64 = await blobToB64(blob);
-      if (b64) ws.send(JSON.stringify({ type: 'audio_chunk', data: b64, ct: blob.type || 'audio/webm' }));
+      if (!b64) { emit({ type: 'error', msg: 'base64 编码失败' }); continue; }
+      ws.send(JSON.stringify({ type: 'audio_chunk', data: b64, ct: blob.type || 'audio/webm' }));
+      emit({ type: 'sent', size: blob.size });
     }
   }
   return {
@@ -998,7 +1010,17 @@ function setupMinutes(state) {
   });
 
   // 服务端 ASR：录音分片上传，转写结果从 WS 的 transcript 回来。
-  const cap = makeAudioCapturer(state);
+  let sent = 0;
+  const cap = makeAudioCapturer(state, 4000, ev => {
+    if (ev.type === 'sent') {
+      sent++;
+      label.textContent = `转写中…已发 ${sent} 段（每段约 4 秒）`;
+    } else if (ev.type === 'error') {
+      label.textContent = '录音出错：' + ev.msg;
+    } else if (ev.type === 'skip') {
+      label.textContent = `录音中…本段太短已跳过（${ev.size}B）`;
+    }
+  });
   btn.addEventListener('click', async () => {
     if (cap.running) {
       cap.stop();

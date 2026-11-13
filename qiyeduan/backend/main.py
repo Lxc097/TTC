@@ -59,6 +59,10 @@ def client_config() -> dict:
         "probe_threshold": config.PROBE_THRESHOLD,
         "hint_cooldown": config.HINT_COOLDOWN,
         "vision_provider": config.VISION_PROVIDER,
+        # 前端据此决定：能不能开语音转写，还是只能用键盘手打
+        "stt_enabled": config.STT_ENABLED and bool(config.STT_API_KEY),
+        "stt_model": config.STT_MODEL,
+        "llm_enabled": config.LLM_ENABLED,
     }
 
 
