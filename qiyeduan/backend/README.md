@@ -276,6 +276,22 @@ LLM        → 读 transcript 判语义回避 + 写追问 + 写报告摘要
 **合规红线写在 prompt 里**：只判断表达是否清晰具体，不评价人格/能力/诚信，不推测动机。
 输出结构里也没有这类字段——想做也做不出来。
 
+### 语音转写（会议纪要）
+
+浏览器只负责**录音分片上传**，转写放服务端 —— 浏览器自带的 `webkitSpeechRecognition`
+直连 Google，国内实测报 `network`，这条路走不通。
+
+```
+浏览器 MediaRecorder（4 秒一段，stop/start）→ WS {"type":"audio_chunk"}
+   → stt.py（阿里云百炼 qwen3-asr-flash）→ {"type":"transcript"} 广播两端
+```
+
+- 适配器在 `stt.py`，只认 `transcribe(bytes, fmt) -> str | None`，换供应商只改这一个文件。
+- 实测：165KB 音频转写 **2.5 秒**，中文一字不差。
+- 未配置时前端推一条 `status{degraded}`，手打输入仍然可用，纪要功能不受影响。
+- 同一时间只转一段（`stt_busy`），上段没回来新段直接丢。
+- 验证脚本：`python tools/test_stt_e2e.py --audio xxx.wav --expect 三年`
+
 ### 触发 → 确认（这是省钱的核心架构）
 
 ```
@@ -355,6 +371,10 @@ set VISION_PROVIDER=real
 | `HINT_COOLDOWN` | `30` | 两条提示最小间隔（秒），防刷屏 |
 | `MOCK_STRESS_WINDOWS` | `25-40,85-100` | mock 模式下模拟负荷升高的时间窗 |
 | `LLM_ENABLED` | `0` | 开启后报告摘要走 LLM，失败自动降级模板 |
+| `STT_ENABLED` | `0` | 语音转写开关（服务端 ASR，会议纪要用） |
+| `STT_API_KEY` | — | 阿里云百炼 key（`qwen3-asr-flash`） |
+| `STT_MODEL` | `qwen3-asr-flash` | ASR 模型名 |
+| `STT_TMP_DIR` | 空 | ASR 临时文件目录，留空用系统临时目录 |
 | `MIN_QUALITY` | `0.5` | 低于此质量的数据直接丢弃 |
 | `VISION_API_URL` | — | 真实 API 地址（`VISION_PROVIDER=real` 时必填） |
 | `VISION_API_KEY` | — | 鉴权用，默认放 `Authorization: Bearer <key>` |

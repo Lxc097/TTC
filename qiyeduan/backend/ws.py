@@ -21,14 +21,17 @@ from typing import Any
 import config
 import llm as llm_mod
 import report as report_mod
+import stt as stt_mod
 from engine import (Behavior, PhysioSample, Turn, evaluate_trigger,
                     judge_turn, summarize_turn)
 from store import STORE, Room, Session
 from vision import get_provider
 
 PROVIDER = get_provider()
-# 分析交给 LLM，测量留给 FacePhys。没配 key 时为 None，整条链退回模板。
+# 分析交给 LLM，测量留给 FacePhys，语音转写交给百炼 ASR。
+# 任何一个没配都在运行时降级，不影响主流程。
 LLM = llm_mod.get_llm()
+STT = stt_mod.get_stt()
 
 # 视频形态（FacePhys）：一次要一段 ≥15 秒的视频，一个视频块换一个采样点。
 # 这条路完全不经过逐帧背压，走 on_video_chunk。
@@ -57,6 +60,8 @@ class RoomHub:
         self.pending: dict | None = None   # 已请求、等待回来的证据
         self.confirm_used = 0              # 本场已经花掉几次确认额度
         self.token_warned = False          # 余额告警只发一次
+        self.stt_busy = False
+        self.stt_warned = False
 
     def server_t(self) -> float:
         """服务端权威时间轴（相对会话开始的秒数）。
@@ -260,6 +265,52 @@ class RoomHub:
         if sample is not None:
             await self._emit_sample(sample, t)
             await self._apply_confirmation(sample, t)
+
+    async def on_audio_chunk(self, role: str, data_b64: str, t: float,
+                             content_type: str = "audio/webm") -> None:
+        """一段录音 → 转文字 → 走和手工输入完全相同的 transcript 通道。
+
+        背压：同一时间只转一段。ASR 要 1~3 秒，排队只会让延迟越拖越长。
+        """
+        session = self.session
+        if session is None:
+            return
+        if STT is None:
+            if not self.stt_warned:
+                self.stt_warned = True
+                await self.send("interviewer", {
+                    "type": "status", "state": "degraded",
+                    "reason": "语音转写未启用（缺 STT_API_KEY），请用手打输入",
+                    "t": t})
+            return
+        if self.stt_busy:
+            return
+        try:
+            audio = base64.b64decode(data_b64.split(",", 1)[-1])
+        except Exception:
+            return
+        if not audio:
+            return
+
+        fmt = "webm"
+        ct = (content_type or "").lower()
+        if "wav" in ct:
+            fmt = "wav"
+        elif "mp4" in ct or "m4a" in ct or "aac" in ct:
+            fmt = "m4a"
+        elif "ogg" in ct:
+            fmt = "ogg"
+
+        self.stt_busy = True
+        try:
+            text = await asyncio.to_thread(STT.transcribe, audio, fmt)
+        except Exception:                            # noqa: BLE001
+            text = None
+        finally:
+            self.stt_busy = False
+
+        if text:
+            await self.on_stt(role, text, t, final=True)
 
     # ---------------- 会议纪要（语音转写） ----------------
     async def on_stt(self, role: str, text: str, t: float,
@@ -586,6 +637,11 @@ async def handle_message(hub: RoomHub, role: str, msg: dict) -> None:
     elif mtype == "stt":
         await hub.on_stt(role, msg.get("text", ""), t,
                          bool(msg.get("final", True)))
+
+    elif mtype == "audio_chunk":
+        # 服务端 ASR：浏览器录音分片送上来，后端转文字后走同一条 transcript 通道
+        await hub.on_audio_chunk(role, msg.get("data", ""), t,
+                                 msg.get("ct", "audio/webm"))
 
     elif mtype == "end":
         # 只有面试官能结束整场，候选人最多退出连接

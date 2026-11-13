@@ -661,5 +661,94 @@ class TestTranscript(PipelineCase):
         self.assertEqual(len(session.transcript), 500, "上限 500 条，防内存涨爆")
 
 
+class FakeSTT:
+    def __init__(self, text: str = "我做过三年后端，主要负责订单系统。") -> None:
+        self.text = text
+        self.calls: list[tuple] = []
+
+    def transcribe(self, audio, fmt="webm"):
+        self.calls.append((len(audio), fmt))
+        return self.text
+
+
+class TestAudioChunk(PipelineCase):
+    """服务端 ASR：浏览器录音分片 → 转文字 → 走 transcript 通道。"""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self._orig_stt = ws_mod.STT
+
+    async def asyncTearDown(self) -> None:
+        ws_mod.STT = self._orig_stt
+        await super().asyncTearDown()
+
+    async def test_audio_becomes_transcript(self):
+        fake = FakeSTT()
+        ws_mod.STT = fake
+        STORE.start_session(self.room, consent=True)
+
+        await ws_mod.handle_message(
+            self.hub, "candidate",
+            {"type": "audio_chunk",
+             "data": base64.b64encode(b"x" * 5000).decode(),
+             "ct": "audio/webm"})
+
+        self.assertEqual(fake.calls, [(5000, "webm")])
+        tr = self.hub.session.transcript
+        self.assertEqual(len(tr), 1)
+        self.assertEqual(tr[0]["role"], "candidate")
+        self.assertIn("三年后端", tr[0]["text"])
+        self.assertTrue([m for m in self.iws.msgs if m["type"] == "transcript"])
+
+    async def test_wav_content_type_maps_to_fmt(self):
+        fake = FakeSTT()
+        ws_mod.STT = fake
+        STORE.start_session(self.room, consent=True)
+        await ws_mod.handle_message(
+            self.hub, "interviewer",
+            {"type": "audio_chunk",
+             "data": base64.b64encode(b"y" * 4000).decode(),
+             "ct": "audio/wav"})
+        self.assertEqual(fake.calls[0][1], "wav")
+
+    async def test_stt_disabled_warns_once(self):
+        ws_mod.STT = None
+        STORE.start_session(self.room, consent=True)
+        payload = {"type": "audio_chunk",
+                   "data": base64.b64encode(b"z" * 5000).decode()}
+        await ws_mod.handle_message(self.hub, "candidate", dict(payload))
+        await ws_mod.handle_message(self.hub, "candidate", dict(payload))
+
+        statuses = [m for m in self.iws.msgs if m["type"] == "status"]
+        self.assertEqual(len(statuses), 1, "只提醒一次，别每段都喊")
+        self.assertIn("STT_API_KEY", statuses[0]["reason"])
+        self.assertEqual(self.hub.session.transcript, [])
+
+    async def test_stt_exception_does_not_break(self):
+        class Boom(FakeSTT):
+            def transcribe(self, audio, fmt="webm"):
+                raise RuntimeError("asr down")
+
+        ws_mod.STT = Boom()
+        STORE.start_session(self.room, consent=True)
+        await ws_mod.handle_message(
+            self.hub, "candidate",
+            {"type": "audio_chunk",
+             "data": base64.b64encode(b"q" * 5000).decode()})
+        self.assertEqual(self.hub.session.transcript, [],
+                         "ASR 挂了就当没听见，不能崩")
+
+    async def test_busy_drops_new_chunk(self):
+        fake = FakeSTT()
+        ws_mod.STT = fake
+        STORE.start_session(self.room, consent=True)
+        self.hub.stt_busy = True
+        await ws_mod.handle_message(
+            self.hub, "candidate",
+            {"type": "audio_chunk",
+             "data": base64.b64encode(b"w" * 5000).decode()})
+        self.assertEqual(fake.calls, [], "上一段还在转，新段直接丢")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

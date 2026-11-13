@@ -112,6 +112,15 @@ TOKEN_FLOOR = _i("TOKEN_FLOOR", 200_000)
 # 超过就判定本段信号不可靠，不进基线 —— 和"宁可静默不可误报"一致。
 HR_MAX_JUMP = _f("HR_MAX_JUMP", 15.0)
 
+# ---------- 语音转写（ASR）----------
+# 浏览器自带的识别直连 Google，国内不通，所以 ASR 放服务端。
+# 没开或没 key 时，前端自动退回手打输入，纪要功能不受影响。
+STT_ENABLED = os.getenv("STT_ENABLED", "0") == "1"
+STT_API_KEY = os.getenv("STT_API_KEY", "")
+STT_MODEL = os.getenv("STT_MODEL", "qwen3-asr-flash")
+# 临时文件目录。只读沙箱里系统临时目录不可写，指向工作区内即可。
+STT_TMP_DIR = os.getenv("STT_TMP_DIR", "")
+
 # ---------- 报告 ----------
 REPORT_MAX_POINTS = _i("REPORT_MAX_POINTS", 3)
 # LLM 负责"分析"（语义判断 / 写追问 / 写总结），FacePhys 只负责"测量"。

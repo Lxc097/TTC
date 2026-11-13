@@ -1,2 +1,4 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
+# 语音转写（阿里云百炼 DashScope）。不装也能跑，只是 STT 关闭、退回手打输入。
+dashscope>=1.20

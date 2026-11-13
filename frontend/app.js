@@ -451,29 +451,12 @@ function showCandidateLive(scene, roomId, audioOnly) {
   }
   connect();
 
-  // 候选人侧也开语音转写：每台设备只负责标"自己说的话"。
-  // 两端都开才不会漏掉对方的声音（各自麦克风有回声消除，抓的主要是本机说话人）。
-  (function setupCandidateStt() {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return;
-    const rec = new SR();
-    rec.lang = 'zh-CN';
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.onresult = ev => {
-      for (let i = ev.resultIndex; i < ev.results.length; i++) {
-        const txt = (((ev.results[i][0] || {}).transcript) || '').trim();
-        if (txt && ws && ws.readyState === 1 && !ended) {
-          ws.send(JSON.stringify({ type: 'stt', text: txt,
-                                   final: ev.results[i].isFinal }));
-        }
-      }
-    };
-    rec.onend = () => {
-      if (!ended && ws && ws.readyState === 1) { try { rec.start(); } catch (e) {} }
-    };
-    try { rec.start(); } catch (e) {}
-  })();
+  // 候选人侧也开录音转写：每台设备只标"自己说的话"。
+  // 两端都开才不会漏掉对方的声音（各自麦克风有回声消除，主要抓本机说话人）。
+  // 用服务端 ASR（录音分片上传），不用浏览器的 SpeechRecognition —— 国内不通。
+  const capState = { get ws() { return ws; }, get ended() { return ended; } };
+  const candCap = makeAudioCapturer(capState);
+  setTimeout(() => { candCap.start(); }, 1500);
 
   const send = o => { if (ws && ws.readyState === 1 && !ended) ws.send(JSON.stringify(o)); };
 
@@ -908,6 +891,74 @@ function sendStt(state, text, final) {
     toast('未连接后端，这句话没发出去');
   }
 }
+const ERR_HINT = {};
+function blobToB64(blob) {
+  return new Promise(resolve => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result || '').split(',')[1] || '');
+    fr.onerror = () => resolve('');
+    fr.readAsDataURL(blob);
+  });
+}
+// 录音分片上传：每 4 秒一段独立音频，发给后端做 ASR。
+// 不用浏览器自带的 SpeechRecognition —— 它直连 Google，国内不可用。
+function makeAudioCapturer(state, chunkMs) {
+  const CHUNK_MS = chunkMs || 4000;
+  let media = null, rec = null, on = false;
+  const MIMES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
+  function pickMime() {
+    for (const m of MIMES) {
+      try { if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; } catch (e) {}
+    }
+    return '';
+  }
+  function recordOnce() {
+    return new Promise((resolve, reject) => {
+      const parts = [];
+      const mime = pickMime();
+      try {
+        rec = new MediaRecorder(media, mime ? { mimeType: mime } : undefined);
+      } catch (e) { reject(e); return; }
+      rec.ondataavailable = e => { if (e.data && e.data.size) parts.push(e.data); };
+      rec.onstop = () => resolve(new Blob(parts, { type: (rec.mimeType || mime || 'audio/webm').split(';')[0] }));
+      rec.start();
+      setTimeout(() => { if (rec && rec.state !== 'inactive') rec.stop(); }, CHUNK_MS);
+    });
+  }
+  async function loop() {
+    while (on) {
+      let blob = null;
+      try { blob = await recordOnce(); } catch (e) { break; }
+      if (!on) break;
+      const ws = state.ws;
+      if (!blob || blob.size < 2000) continue;          // 太小基本是静音
+      if (!ws || ws.readyState !== 1 || state.ended) continue;
+      const b64 = await blobToB64(blob);
+      if (b64) ws.send(JSON.stringify({ type: 'audio_chunk', data: b64, ct: blob.type || 'audio/webm' }));
+    }
+  }
+  return {
+    get running() { return on; },
+    async start() {
+      if (on) return true;
+      try {
+        media = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
+        });
+      } catch (e) { return false; }
+      on = true;
+      loop();
+      return true;
+    },
+    stop() {
+      on = false;
+      try { if (rec && rec.state !== 'inactive') rec.stop(); } catch (e) {}
+      try { if (media) media.getTracks().forEach(t => t.stop()); } catch (e) {}
+      media = null;
+    },
+  };
+}
+
 function setupMinutes(state) {
   state.tr = state.tr || [];
   state.trInterim = state.trInterim || {};
@@ -925,59 +976,23 @@ function setupMinutes(state) {
     if (e.key === 'Enter') { e.preventDefault(); manual(); }
   });
 
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) {
-    label.textContent = '此浏览器不支持语音识别，用下方手打';
-    btn.disabled = true;
-    return;
-  }
-  let rec = null, on = false;
-  btn.addEventListener('click', () => {
-    if (on) {
-      on = false;
-      try { rec && rec.stop(); } catch (e) {}
+  // 服务端 ASR：录音分片上传，转写结果从 WS 的 transcript 回来。
+  const cap = makeAudioCapturer(state);
+  btn.addEventListener('click', async () => {
+    if (cap.running) {
+      cap.stop();
       btn.textContent = '开启语音转写';
       label.textContent = '已关闭';
       return;
     }
-    rec = new SR();
-    rec.lang = 'zh-CN';
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.onresult = ev => {
-      for (let i = ev.resultIndex; i < ev.results.length; i++) {
-        const txt = (((ev.results[i][0] || {}).transcript) || '').trim();
-        if (txt) sendStt(state, txt, ev.results[i].isFinal);
-      }
-    };
-    const ERR_HINT = {
-      network: '语音服务连不上（国内 Chrome 常见）→ 改用手打，或换 Edge 试试',
-      'service-not-allowed': '浏览器禁用了语音服务 → 改用手打',
-      'not-allowed': '麦克风权限被拒 → 允许后重试，或直接手打',
-      'audio-capture': '没检测到麦克风 → 用手打',
-      'no-speech': '没听到声音，再说一次',
-      aborted: '已取消',
-    };
-    rec.onerror = e => {
-      const code = e.error || 'unknown';
-      // 关键：出错必须停掉自动重启，否则 onend 会不停重连、无限报错。
-      on = false;
-      btn.textContent = '开启语音转写';
-      label.textContent = ERR_HINT[code] || ('识别出错：' + code);
-      if (code !== 'no-speech' && code !== 'aborted') {
-        toast('语音转写不可用，已切到手打输入');
-        input.focus();
-      }
-    };
-    rec.onend = () => { if (on) { try { rec.start(); } catch (e) { on = false; } } };
-    try {
-      rec.start();
-      on = true;
-      btn.textContent = '关闭语音转写';
-      label.textContent = '转写中…';
-    } catch (e) {
-      label.textContent = '启动失败：' + (e.message || e);
+    const ok = await cap.start();
+    if (!ok) {
+      label.textContent = '麦克风权限被拒 → 用下方手打';
+      input.focus();
+      return;
     }
+    btn.textContent = '关闭语音转写';
+    label.textContent = '转写中…（每 4 秒一段）';
   });
 }
 
