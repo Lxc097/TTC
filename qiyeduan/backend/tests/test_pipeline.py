@@ -742,16 +742,28 @@ class TestAudioChunk(PipelineCase):
         self.assertEqual(self.hub.session.transcript, [],
                          "ASR 挂了就当没听见，不能崩")
 
-    async def test_busy_drops_new_chunk(self):
+    async def test_over_capacity_drops_new_chunk(self):
         fake = FakeSTT()
         ws_mod.STT = fake
         STORE.start_session(self.room, consent=True)
-        self.hub.stt_busy = True
+        self.hub.stt_inflight = 2      # 已有两段在转，超过并发上限
         await ws_mod.handle_message(
             self.hub, "candidate",
             {"type": "audio_chunk",
              "data": base64.b64encode(b"w" * 5000).decode()})
-        self.assertEqual(fake.calls, [], "上一段还在转，新段直接丢")
+        self.assertEqual(fake.calls, [], "超过并发上限才丢，1 段时不该丢")
+
+    async def test_one_inflight_still_accepts(self):
+        """1.6 秒分段下并发 2 是常态，不能像原来那样一段就把后面的全丢了。"""
+        fake = FakeSTT()
+        ws_mod.STT = fake
+        STORE.start_session(self.room, consent=True)
+        self.hub.stt_inflight = 1
+        await ws_mod.handle_message(
+            self.hub, "candidate",
+            {"type": "audio_chunk",
+             "data": base64.b64encode(b"v" * 5000).decode()})
+        self.assertEqual(len(fake.calls), 1)
 
 
 class TestMinutesWithoutCandidate(PipelineCase):

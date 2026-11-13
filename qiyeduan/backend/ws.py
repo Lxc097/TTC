@@ -63,6 +63,7 @@ class RoomHub:
         self.stt_busy = False
         self.stt_warned = False
         self.stt_fail = 0
+        self.stt_inflight = 0
 
     def server_t(self) -> float:
         """服务端权威时间轴（相对会话开始的秒数）。
@@ -294,7 +295,9 @@ class RoomHub:
                     "reason": "语音转写未启用（缺 STT_API_KEY），请用手打输入",
                     "t": t})
             return
-        if self.stt_busy:
+        # 最多同时转 2 段：1.6 秒一段、单段约 0.85 秒，正常跟得上；
+        # 给到 2 是为了网络抖动时不丢字（原来 busy 就整段丢弃，会漏话）。
+        if self.stt_inflight >= 2:
             return
         try:
             audio = base64.b64decode(data_b64.split(",", 1)[-1])
@@ -312,13 +315,13 @@ class RoomHub:
         elif "ogg" in ct:
             fmt = "ogg"
 
-        self.stt_busy = True
+        self.stt_inflight += 1
         try:
             text = await asyncio.to_thread(STT.transcribe, audio, fmt)
         except Exception:                            # noqa: BLE001
             text = None
         finally:
-            self.stt_busy = False
+            self.stt_inflight -= 1
 
         if text:
             print(f"[stt] role={role} bytes={len(audio)} fmt={fmt} "

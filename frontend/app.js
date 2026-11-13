@@ -874,6 +874,22 @@ function trRow(it, interim) {
              : '<span class="tr-t">' + fmtTs(it.t || 0) + '</span>') +
     '</div><div class="tr-text">' + esc(it.text) + '</div></div>';
 }
+function groupTranscript(items) {
+  // 分段切得短（1.6s）句子会被切成几段。把同一说话人、间隔 < 2.5s 的连续片段
+  // 合成一个气泡，看起来才像"一句话说完才断"。
+  const out = [];
+  for (const it of items) {
+    const last = out[out.length - 1];
+    if (last && last.role === it.role && (it.t - last.tEnd) < 2.5) {
+      last.text += it.text;
+      last.tEnd = it.t;
+      continue;
+    }
+    out.push({ role: it.role, text: it.text, t: it.t, tEnd: it.t });
+  }
+  return out;
+}
+
 function renderTranscript(state) {
   const box = $('#minutesBody');
   if (!box) return;
@@ -885,7 +901,7 @@ function renderTranscript(state) {
     box.innerHTML = '<p class="tiny muted" style="padding:10px 2px;">对话会实时出现在这里。开启语音转写，或在下面手打。</p>';
     return;
   }
-  box.innerHTML = items.map(x => trRow(x, false)).join('') + interim.join('');
+  box.innerHTML = groupTranscript(items).map(x => trRow(x, false)).join('') + interim.join('');
   box.scrollTop = box.scrollHeight;
 }
 function sendStt(state, text, final) {
@@ -909,7 +925,9 @@ function blobToB64(blob) {
 // 不用浏览器自带的 SpeechRecognition —— 它直连 Google，国内不可用。
 function makeAudioCapturer(state, chunkMs, onEvent) {
   const emit = (ev) => { try { onEvent && onEvent(ev); } catch (e) {} };
-  const CHUNK_MS = chunkMs || 4000;
+  // 1.6 秒是实测出来的甜点：ASR 对 1.5 秒音频 0.84 秒出结果且内容完整；
+  // 0.8 秒会被截断反而更慢，4 秒纯粹是在等录音填满。
+  const CHUNK_MS = chunkMs || 1600;
   let media = null, rec = null, on = false;
   const MIMES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
   function pickMime() {
@@ -1011,7 +1029,7 @@ function setupMinutes(state) {
 
   // 服务端 ASR：录音分片上传，转写结果从 WS 的 transcript 回来。
   let sent = 0;
-  const cap = makeAudioCapturer(state, 4000, ev => {
+  const cap = makeAudioCapturer(state, 1600, ev => {
     if (ev.type === 'sent') {
       sent++;
       label.textContent = `转写中…已发 ${sent} 段（每段约 4 秒）`;
