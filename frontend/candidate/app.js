@@ -106,11 +106,32 @@
     { urls: ['stun:stun.chat.bilibili.com:3478'] },
   ];
 
+  let rtcCands = { host: 0, srflx: 0, relay: 0, other: 0 };
+
+  /* 把连接诊断回传给服务端日志：用户不用看懂控制台，我们也能知道卡在哪一步 */
+  function rtcDiag(ev) {
+    if (!wsReady()) return;
+    const pc = state.pc;
+    try {
+      send({ type: 'diag', ev: ev, data: {
+        ua: (navigator.userAgent || '').slice(0, 120),
+        conn: pc ? pc.connectionState : 'none',
+        ice: pc ? pc.iceConnectionState : 'none',
+        gather: pc ? pc.iceGatheringState : 'none',
+        cands: rtcCands,
+        live: state.pcLive,
+        interviewerOnline: state.interviewerOnline,
+        hasCamera: Boolean(state.cameraStream),
+      } });
+    } catch (_) { /* 诊断失败不能影响面试 */ }
+  }
+
   function rtcReset() {
     const pc = state.pc;
     state.pc = null;
     state.pcPending = [];
     state.pcLive = false;
+    rtcCands = { host: 0, srflx: 0, relay: 0, other: 0 };
     if (state.pcTimer) clearTimeout(state.pcTimer);
     state.pcTimer = null;
     if (pc) { try { pc.close(); } catch (_) { /* 已经关了 */ } }
@@ -125,6 +146,8 @@
     pc.onicecandidate = (event) => {
       const candidate = event.candidate;
       if (!candidate || !wsReady()) return;
+      const kind = candidate.type || 'other';
+      rtcCands[kind] = (rtcCands[kind] || 0) + 1;
       send({ type: 'rtc', sub: 'ice', candidate: {
         candidate: candidate.candidate,
         sdpMid: candidate.sdpMid,
@@ -138,9 +161,11 @@
         if (state.pcTimer) clearTimeout(state.pcTimer);
         state.pcTimer = null;
         text('camera-status', '画面已直连面试官（点对点，不经过服务器）。');
+        rtcDiag('connected');
       } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         rtcReset();
         text('camera-status', '点对点直连没打通（路由器禁止设备互访或多层 NAT 都会这样），已切回逐帧画面。');
+        rtcDiag('failed');
       }
     };
     return pc;
@@ -162,10 +187,12 @@
       await pc.setLocalDescription(offer);
     } catch (_) { rtcReset(); return; }
     send({ type: 'rtc', sub: 'offer', sdp: { type: 'offer', sdp: pc.localDescription.sdp } });
+    rtcDiag('offer');
     // 12 秒还没连上就明确告诉人原因，别让人对着"开着摄像头"的提示页干等
     if (state.pcTimer) clearTimeout(state.pcTimer);
     state.pcTimer = setTimeout(() => {
       if (state.pcLive) return;
+      rtcDiag('timeout');
       text('camera-status', '点对点直连 12 秒仍未建立（常见于路由器隔离或多层 NAT），画面继续走逐帧通道。');
     }, 12000);
   }
@@ -186,7 +213,7 @@
       try { await pc.addIceCandidate(message.candidate); } catch (_) { /* 过期候选 */ }
       return;
     }
-    if (message.sub === 'ready') { rtcOffer(); return; }
+    if (message.sub === 'ready') { rtcDiag('ready'); rtcOffer(); return; }
     if (message.sub === 'bye') { rtcReset(); text('camera-status', '面试官已断开画面连接。'); }
   }
 
@@ -584,10 +611,12 @@
       state.frameTimer = setInterval(() => {
         if (!wsReady() || !state.cameraStream || !context || video.readyState < 2) return;
         // 直连通了以后逐帧只用来喂分析，2 秒一张就够；
-        // 直连没通时面试官只能看这条路，缩到 800 毫秒一张（约 1.7fps），
-        // 比原来的 2 秒一张顺，又不至于把跨境上行塞满。
+        // 直连没通时面试官只能看这条路，压到 200 毫秒一张（约 5fps）。
         const now = Date.now();
-        if (now - (state.lastFrameAt || 0) < (state.pcLive ? 2000 : 800)) return;
+        const live = state.pcLive;
+        if (now - (state.lastFrameAt || 0) < (live ? 2000 : 200)) return;
+        // 上行堵住时直接丢帧，排队只会让画面越来越晚
+        if (!live && state.ws && state.ws.bufferedAmount > 150000) return;
         state.lastFrameAt = now;
         try {
           // 手机竖屏给的是纵向画面，直接拉伸会把人脸拉扁：按 cover 居中裁剪再画
@@ -597,13 +626,13 @@
           const sw = 320 / scale;
           const sh = 240 / scale;
           context.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, 320, 240);
-          // 直连正常时把画质再压一点，这条路只是兜底
-          send({type:'frame',img:canvas.toDataURL('image/jpeg', state.pcLive ? .4 : .5)});
+          send({type:'frame',img:canvas.toDataURL('image/jpeg', live ? .4 : .45)});
         } catch (_) { /* No invented frame on capture failure. */ }
-      }, 400);
+      }, 150);
       text('camera-status','摄像头已开启，画面按房间协议发送；你可随时停止。');
       text('camera-button','停止摄像头');
       // 面试官已经在房间里的话，开摄即发起点对点直连
+      rtcDiag('camera-start');
       rtcOffer();
       // 一场面试几十分钟，手机上尽量别让屏幕自动熄灭
       try { if (navigator.wakeLock) state.wakeLock = await navigator.wakeLock.request('screen'); } catch (_) { state.wakeLock = null; }

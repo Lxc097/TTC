@@ -43,7 +43,7 @@ SEGMENT_FRAMES = max(10, int(float(os.getenv("VISION_SEGMENT_SECONDS", "12"))
                             * config.FRAME_FPS))
 # 面试官端镜像候选人画面的最小间隔（秒）。候选人按 5fps 上报，
 # 这里默认降到 4fps：面试官只需要"看得见人"，不必把上行再复制一遍。
-PEER_FRAME_INTERVAL = max(0.1, float(os.getenv("PEER_FRAME_INTERVAL", "0.25")))
+PEER_FRAME_INTERVAL = max(0.1, float(os.getenv("PEER_FRAME_INTERVAL", "0.2")))
 
 
 def _archive_report(application_id: str, session_id: str, report: dict) -> None:
@@ -702,6 +702,10 @@ async def relay_rtc(hub: RoomHub, role: str, msg: dict) -> None:
         }
 
     peer = "interviewer" if role == "candidate" else "candidate"
+    if sub != "ice":
+        # ICE 候选太多不打印；offer/answer/ready/bye 各留一行，排查时能看出
+        # 到底是没发信令、还是发了但 ICE 打不通
+        print(f"[rtc] room={hub.room.code} {role}->{peer} {sub}", flush=True)
     await hub.send(peer, payload)
 
 
@@ -761,6 +765,17 @@ async def handle_message(hub: RoomHub, role: str, msg: dict) -> None:
     elif mtype == "rtc":
         # 点对点视频信令：只转给对端，不落库、不进分析链。
         await relay_rtc(hub, role, msg)
+
+    elif mtype == "diag":
+        # 浏览器端把 WebRTC 连接诊断送上来，直接写进 journal。
+        # 用户看不懂 chrome://webrtc-internals，但这里能一眼看出卡在哪一步。
+        data = msg.get("data") or {}
+        try:
+            blob = json.dumps(data, ensure_ascii=False)[:600]
+        except Exception:
+            blob = "{}"
+        print(f"[diag] room={hub.room.code} role={role} ev={msg.get('ev')} {blob}",
+              flush=True)
 
     elif mtype == "ping":
         await hub.send(role, {"type": "pong", "t": t})

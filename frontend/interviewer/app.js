@@ -883,11 +883,30 @@ const RTC_ICE_SERVERS = [
   { urls: ['stun:stun.chat.bilibili.com:3478'] },
 ];
 
+let rtcCands = { host: 0, srflx: 0, relay: 0, other: 0 };
+
+/* 把连接诊断回传给服务端日志，卡在哪一步一眼能看出来 */
+function rtcDiag(state, ev) {
+  if (!state.ws || state.ws.readyState !== 1) return;
+  const pc = state.pc;
+  try {
+    state.ws.send(JSON.stringify({ type: 'diag', ev: ev, data: {
+      ua: (navigator.userAgent || '').slice(0, 120),
+      conn: pc ? pc.connectionState : 'none',
+      ice: pc ? pc.iceConnectionState : 'none',
+      gather: pc ? pc.iceGatheringState : 'none',
+      cands: rtcCands,
+      live: state.rtcLive,
+    } }));
+  } catch (_) { /* 诊断失败不能影响面试 */ }
+}
+
 function rtcReset(state) {
   const pc = state.pc;
   state.pc = null;
   state.pcPending = [];
   state.rtcLive = false;
+  rtcCands = { host: 0, srflx: 0, relay: 0, other: 0 };
   if (state.rtcTimer) clearTimeout(state.rtcTimer);
   state.rtcTimer = null;
   if (pc) { try { pc.close(); } catch (_) { /* 已经关了 */ } }
@@ -904,6 +923,8 @@ function rtcEnsure(state) {
   pc.onicecandidate = (event) => {
     const candidate = event.candidate;
     if (!candidate || !state.ws || state.ws.readyState !== 1) return;
+    const kind = candidate.type || 'other';
+    rtcCands[kind] = (rtcCands[kind] || 0) + 1;
     state.ws.send(JSON.stringify({ type: 'rtc', sub: 'ice', candidate: {
       candidate: candidate.candidate,
       sdpMid: candidate.sdpMid,
@@ -930,10 +951,12 @@ function rtcEnsure(state) {
       state.rtcLive = true;
       const chip = $('#stageChip');
       if (chip) chip.textContent = '候选人画面 · 点对点直连';
+      rtcDiag(state, 'connected');
     } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
       rtcReset(state);
       const chip = $('#stageChip');
       if (chip) chip.textContent = '点对点未建立 · 逐帧画面';
+      rtcDiag(state, 'failed');
     }
   };
   return pc;
@@ -945,6 +968,7 @@ async function rtcOnMessage(state, m) {
     if (state.pc && state.pc.signalingState !== 'stable') rtcReset(state);
     const pc = rtcEnsure(state);
     if (!pc) return;
+    rtcDiag(state, 'offer');
     try {
       await pc.setRemoteDescription(m.sdp);
       for (const queued of state.pcPending.splice(0)) {
@@ -962,6 +986,7 @@ async function rtcOnMessage(state, m) {
         if (state.rtcLive) return;
         const chip = $('#stageChip');
         if (chip) chip.textContent = '点对点未建立 · 逐帧画面';
+        rtcDiag(state, 'timeout');
       }, 12000);
     } catch (_) { rtcReset(state); }
     return;
