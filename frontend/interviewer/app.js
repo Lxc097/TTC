@@ -869,7 +869,10 @@ function connectInterviewer(state) {
     let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
     handleIntMsg(state, m);
   };
-  ws.onclose = () => { if (!state.ended) { const n = $('#bandNote'); if (n) n.textContent = state.linked ? '连接已断开 · 请刷新后核对面试状态' : '后端离线 · 本地演示模式'; const st = $('#intStatus'); if (st && !state.hasSignal) st.textContent = state.linked ? '未能连接已邀请的面试房间' : '等待候选人进入…'; } };
+  ws.onclose = () => {
+    rtcReset(state);
+    if (!state.ended) { const n = $('#bandNote'); if (n) n.textContent = state.linked ? '连接已断开 · 请刷新后核对面试状态' : '后端离线 · 本地演示模式'; const st = $('#intStatus'); if (st && !state.hasSignal) st.textContent = state.linked ? '未能连接已邀请的面试房间' : '等待候选人进入…'; }
+  };
   every(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'ping', t: state.sec })); }, 15000);
 }
 /* ---------------- 点对点画面（WebRTC） ----------------

@@ -22,6 +22,7 @@
     pcPending: [],
     pcLive: false,
     pcTimer: null,
+    pcRetries: 0,
     clipRecorder: null,
     clipTimer: null,
     recordRequest: null,
@@ -198,6 +199,7 @@
       if (state.pc !== pc) return;
       if (pc.connectionState === 'connected') {
         state.pcLive = true;
+        state.pcRetries = 0;
         if (state.pcTimer) clearTimeout(state.pcTimer);
         state.pcTimer = null;
         text('camera-status', '画面已直连面试官（点对点，不经过服务器）。');
@@ -228,12 +230,19 @@
     } catch (_) { rtcReset(); return; }
     send({ type: 'rtc', sub: 'offer', sdp: { type: 'offer', sdp: pc.localDescription.sdp } });
     rtcDiag('offer');
-    // 12 秒还没连上就明确告诉人原因，别让人对着"开着摄像头"的提示页干等
+    // 12 秒还没连上就重来一次：DTLS 卡住这类问题重建连接往往就好了
     if (state.pcTimer) clearTimeout(state.pcTimer);
     state.pcTimer = setTimeout(() => {
       if (state.pcLive) return;
       rtcDiag('timeout');
-      text('camera-status', '点对点直连 12 秒仍未建立（常见于路由器隔离或多层 NAT），画面继续走逐帧通道。');
+      if ((state.pcRetries || 0) < 2) {
+        state.pcRetries = (state.pcRetries || 0) + 1;
+        rtcReset();
+        text('camera-status', '直连没建立，正在重试（第 ' + state.pcRetries + ' 次）…');
+        rtcOffer();
+        return;
+      }
+      text('camera-status', '点对点直连反复失败（路由器禁止设备互访或多层 NAT 都会这样），画面继续走逐帧通道。');
     }, 12000);
   }
 
@@ -674,6 +683,7 @@
       text('camera-status','摄像头已开启，画面按房间协议发送；你可随时停止。');
       text('camera-button','停止摄像头');
       // 面试官已经在房间里的话，开摄即发起点对点直连
+      state.pcRetries = 0;
       rtcDiag('camera-start');
       rtcOffer();
       if (state.statsTimer) clearInterval(state.statsTimer);
