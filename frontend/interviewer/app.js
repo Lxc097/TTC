@@ -992,17 +992,26 @@ function rtcEnsure(state) {
       state.rtcLive = true;
       const video = $('#peerVideoRtc');
       if (video) video.classList.add('on');
+      const fallback = $('#peerVideo');
+      if (fallback) fallback.classList.remove('on');
       const placeholder = $('#stagePlaceholder');
       if (placeholder) placeholder.style.display = 'none';
       const chip = $('#stageChip');
       if (chip) chip.textContent = '候选人画面 · 点对点直连';
       state.lastFrameAt = Date.now();
       rtcDiag(state, 'connected');
+    } else if (pc.connectionState === 'disconnected') {
+      state.rtcLive = false;
+      const video = $('#peerVideoRtc');
+      if (video) video.classList.remove('on');
+      const chip = $('#stageChip');
+      if (chip) chip.textContent = '直连中断 · 正在切换逐帧画面';
+      rtcDiag(state, 'disconnected');
     } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      rtcDiag(state, 'failed');
       rtcReset(state);
       const chip = $('#stageChip');
       if (chip) chip.textContent = '点对点未建立 · 逐帧画面';
-      rtcDiag(state, 'failed');
     }
   };
   return pc;
@@ -1052,7 +1061,7 @@ function applyPeerFrame(state, m) {
   el.src = m.img;
   el.classList.add('on');
   const ph = $('#stagePlaceholder'); if (ph) ph.style.display = 'none';
-  const chip = $('#stageChip'); if (chip) chip.textContent = '候选人画面 · 实时';
+  const chip = $('#stageChip'); if (chip) chip.textContent = '候选人画面 · 逐帧';
   state.lastFrameAt = Date.now();
 }
 function resetPeerStage(state) {

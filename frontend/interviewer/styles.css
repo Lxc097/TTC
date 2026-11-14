@@ -254,6 +254,7 @@ p { margin: 0; }
   object-fit: cover; background: #101010; display: none;
 }
 .peer-video.on { display: block; }
+#peerVideoRtc.on { z-index: 2; }
 .stage-chip {
   position: absolute; right: 14px; bottom: 14px; z-index: 3;
   background: rgba(0,0,0,.55); color: #fff; font-size: 12px; font-weight: 600;
