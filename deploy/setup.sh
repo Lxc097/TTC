@@ -44,11 +44,11 @@ log "建虚拟环境并装依赖"
 cd "$APP_DIR"
 [ -d .venv ] || python3 -m venv .venv
 .venv/bin/pip install --quiet --upgrade pip
-.venv/bin/pip install --quiet -r qiyeduan/backend/requirements.txt
+.venv/bin/pip install --quiet -r backend/requirements.txt
 
 # ---------------------------------------------------------------- 4. .env
 log "准备 .env（不存在才创建，默认 mock，不花钱）"
-ENV_FILE="$APP_DIR/qiyeduan/backend/.env"
+ENV_FILE="$APP_DIR/backend/.env"
 if [ ! -f "$ENV_FILE" ]; then
   cat > "$ENV_FILE" <<'ENVEOF'
 # 生产默认：mock 数据源，不开 LLM —— 公开链接谁都能点，默认不产生任何费用。
@@ -86,10 +86,10 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=$APP_DIR/qiyeduan/backend
+WorkingDirectory=$APP_DIR/backend
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONIOENCODING=utf-8
-ExecStart=$APP_DIR/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
+ExecStart=$APP_DIR/.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=3
 
@@ -114,7 +114,7 @@ server {
     listen [::]:80;
     server_name woaiyrb.com www.woaiyrb.com;
 
-    root /opt/ttc/frontend;
+    root /opt/ttc/frontend/interviewer;
     index index.html;
 
     # 前端是纯静态 SPA（hash 路由），找不到文件就回首页

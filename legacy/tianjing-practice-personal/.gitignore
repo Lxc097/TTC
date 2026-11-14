@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.playwright-cli/
+output/playwright/
+*.tsbuildinfo
+.env
+.env.local
+.env.*
+!.env.example
+LOCAL_SECURITY_NOTES.md
+output/
+wiko/
+.npmrc

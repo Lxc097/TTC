@@ -39,7 +39,7 @@ curl -fsSL https://raw.githubusercontent.com/Lxc097/TTC/main/deploy/setup.sh | C
 sudo -i
 apt-get update && apt-get install -y python3-venv python3-pip nginx git
 git clone --depth 1 https://github.com/Lxc097/TTC.git /opt/ttc
-cd /opt/ttc && python3 -m venv .venv && .venv/bin/pip install -r qiyeduan/backend/requirements.txt
+cd /opt/ttc && python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 # 然后照 deploy/setup.sh 里第 4~6 步建 .env / systemd / nginx
 ```
 
@@ -53,7 +53,7 @@ cd /opt/ttc && python3 -m venv .venv && .venv/bin/pip install -r qiyeduan/backen
 要开真实能力：
 
 ```bash
-vi /opt/ttc/qiyeduan/backend/.env     # 改 VISION_PROVIDER=facephys、LLM_ENABLED=1、填 key
+vi /opt/ttc/backend/.env     # 改 VISION_PROVIDER=facephys、LLM_ENABLED=1、填 key
 systemctl restart ttc-backend
 ```
 

@@ -1,0 +1,58 @@
+.device-page { width: min(1180px, calc(100% - 48px)); margin: 0 auto; padding: 34px 0 82px; color: #18243b; }
+.device-page__top, .device-page__heading, .device-card__title, .device-camera-actions, .device-page__footer, .device-page__privacy, .device-page__footer-copy small, .device-text-mode { display: flex; align-items: center; }
+.device-page__top { justify-content: space-between; margin-bottom: 36px; }
+.device-back { display: inline-flex; align-items: center; gap: 8px; background: none; border: 0; padding: 7px 0; color: #64748b; font: inherit; font-size: 14px; cursor: pointer; }
+.device-back:hover { color: #315bd1; }
+.device-page__step { color: #69778f; font-size: 13px; }
+.device-page__step span { color: #a9b1c0; padding: 0 5px; }
+.device-page__heading { align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 29px; }
+.device-eyebrow { display: block; color: #315bd1; font-size: 13px; font-weight: 650; margin-bottom: 11px; }
+.device-page__heading h1 { margin: 0 0 9px; font-size: clamp(28px, 3.1vw, 39px); letter-spacing: -0.055em; line-height: 1.15; }
+.device-page__heading p { margin: 0; color: #718099; font-size: 14px; line-height: 1.7; }
+.device-page__privacy { flex: none; gap: 7px; color: #496284; background: #eef4ff; border: 1px solid #dfeafb; border-radius: 999px; padding: 10px 14px; font-size: 12px; font-weight: 560; }
+.device-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(320px, 1fr); gap: 20px; align-items: start; }
+.device-side { display: grid; gap: 20px; }
+.device-card { background: #fff; border: 1px solid #e5eaf2; border-radius: 20px; padding: 24px; box-shadow: 0 8px 32px rgba(29, 51, 91, .035); }
+.device-card__title { gap: 12px; min-width: 0; margin-bottom: 20px; }
+.device-icon { flex: none; display: grid; place-items: center; width: 39px; height: 39px; border-radius: 12px; color: #3764d8; background: #eef3ff; }
+.device-card__title > div { min-width: 0; flex: 1; }
+.device-card__title h2 { font-size: 16px; letter-spacing: -.025em; margin: 0 0 3px; }
+.device-card__title p { font-size: 12px; color: #8490a4; margin: 0; }
+.device-status { flex: none; border-radius: 999px; border: 1px solid #e5eaf1; background: #f7f8fb; color: #78859a; padding: 5px 9px; font-size: 11px; font-weight: 600; }
+.device-status--ready { color: #187254; background: #eaf8f2; border-color: #cdeedd; }
+.device-status--requesting { color: #315bd1; background: #edf3ff; border-color: #dce7fb; }
+.device-status--denied, .device-status--error { color: #b44242; background: #fff2f1; border-color: #f6d9d5; }
+.device-status--unavailable { color: #96631b; background: #fff8e9; border-color: #f5e6c7; }
+.device-camera-actions { gap: 9px; margin: 18px 0 21px; }
+.device-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 41px; padding: 0 16px; border: 1px solid transparent; border-radius: 10px; font: inherit; font-size: 13px; font-weight: 640; cursor: pointer; transition: background .16s, transform .16s, border-color .16s; }
+.device-button:active:not(:disabled) { transform: scale(.98); }
+.device-button:disabled { opacity: .5; cursor: not-allowed; }
+.device-button--primary { background: #315fd6; color: #fff; box-shadow: 0 5px 12px rgba(49,95,214,.16); }
+.device-button--primary:hover:not(:disabled) { background: #254fc3; }
+.device-button--secondary { background: #fff; border-color: #dfe5ef; color: #35445c; }
+.device-button--secondary:hover:not(:disabled) { background: #f6f8fc; border-color: #cbd5e4; }
+.device-icon-button { display: grid; place-items: center; height: 41px; width: 41px; border: 1px solid #dfe5ef; border-radius: 10px; color: #6a7891; background: #fff; cursor: pointer; }
+.device-icon-button:hover { color: #315fd1; background: #f6f8fc; }
+.device-select-label { display: block; color: #4c5b73; font-size: 12px; font-weight: 620; margin-bottom: 8px; }
+.device-select { width: 100%; height: 42px; padding: 0 12px; border: 1px solid #dfe5ef; border-radius: 9px; background: #fff; color: #263650; font: inherit; font-size: 13px; }
+.device-helper { margin: 9px 0 0; color: #98a3b3; font-size: 11px; line-height: 1.5; }
+.device-alert { margin: 13px 0 0; border-radius: 9px; padding: 11px 12px; color: #a94242; background: #fff2f1; font-size: 12px; line-height: 1.5; }
+.device-mic-meter { border-radius: 11px; padding: 14px; background: #f7f9fc; border: 1px solid #eef1f5; margin: 2px 0 17px; }
+.device-mic-meter__top { display: flex; justify-content: space-between; gap: 10px; color: #687890; font-size: 12px; margin-bottom: 12px; }
+.device-mic-meter__track { height: 7px; overflow: hidden; background: #e4eaf4; border-radius: 999px; }
+.device-mic-meter__track span { display: block; height: 100%; border-radius: inherit; background: #4f77e2; transition: width .15s; }
+.device-consent-copy { color: #708098; font-size: 12px; line-height: 1.75; margin: -2px 0 14px; }
+.device-consent-options { display: grid; gap: 8px; }
+.device-consent-options label { display: flex; align-items: center; gap: 9px; cursor: pointer; border: 1px solid #e7ebf2; border-radius: 10px; padding: 12px; color: #4a5871; font-size: 12px; }
+.device-consent-options label.is-selected { border-color: #9eb6f2; background: #f3f6ff; color: #254fc3; }
+.device-consent-options input, .device-page__footer-copy input { accent-color: #315fd6; }
+.device-page__footer { justify-content: space-between; gap: 24px; margin-top: 21px; border: 1px solid #e5eaf2; background: #fff; border-radius: 17px; padding: 18px 22px; }
+.device-page__footer-copy label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.device-page__footer-copy small { gap: 5px; margin-top: 8px; color: #8995a7; font-size: 11px; }
+.device-button--continue { min-width: 138px; }
+.device-text-mode { gap: 5px; margin: 12px 0 0; color: #79879c; font-size: 11px; }
+.device-spin { animation: device-spin .8s linear infinite; }
+@keyframes device-spin { to { transform: rotate(360deg); } }
+@media (max-width: 850px) { .device-grid { grid-template-columns: 1fr; } .device-side { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 650px) { .device-page { width: min(100% - 28px, 540px); padding-top: 22px; } .device-page__top { margin-bottom: 27px; } .device-page__heading { align-items: flex-start; flex-direction: column; gap: 16px; } .device-grid, .device-side { grid-template-columns: 1fr; gap: 14px; } .device-card { padding: 18px; border-radius: 17px; } .device-page__footer { align-items: stretch; flex-direction: column; padding: 17px; } .device-button--continue { width: 100%; } }
+@media (prefers-reduced-motion: reduce) { .device-button, .device-mic-meter__track span { transition: none; } .device-spin { animation: none; } }
