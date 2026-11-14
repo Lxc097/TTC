@@ -56,3 +56,127 @@
 @media (max-width: 850px) { .device-grid { grid-template-columns: 1fr; } .device-side { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 650px) { .device-page { width: min(100% - 28px, 540px); padding-top: 22px; } .device-page__top { margin-bottom: 27px; } .device-page__heading { align-items: flex-start; flex-direction: column; gap: 16px; } .device-grid, .device-side { grid-template-columns: 1fr; gap: 14px; } .device-card { padding: 18px; border-radius: 17px; } .device-page__footer { align-items: stretch; flex-direction: column; padding: 17px; } .device-button--continue { width: 100%; } }
 @media (prefers-reduced-motion: reduce) { .device-button, .device-mic-meter__track span { transition: none; } .device-spin { animation: none; } }
+
+[data-theme="practice"] .device-page--practice {
+  width: min(1120px, 100% - 40px);
+  padding: clamp(24px, 4vw, 48px) 0 clamp(38px, 6vw, 72px);
+  color: var(--practice-ink);
+}
+
+[data-theme="practice"] .device-page--practice .device-page__top { gap: 12px; margin-bottom: 24px; }
+[data-theme="practice"] .device-page--practice .device-back { min-height: 44px; color: var(--practice-action); font-weight: 700; }
+[data-theme="practice"] .device-page--practice .device-back:hover { text-decoration: underline; }
+[data-theme="practice"] .device-page--practice .device-page__step { color: var(--practice-muted); text-align: end; }
+[data-theme="practice"] .device-page--practice .device-page__step span { color: var(--practice-muted); }
+[data-theme="practice"] .device-page--practice .device-eyebrow { color: var(--practice-action); font-weight: 700; }
+[data-theme="practice"] .device-page--practice .device-page__heading h1,
+[data-theme="practice"] .device-page--practice .device-card__title h2 {
+  font-family: var(--practice-serif);
+  letter-spacing: -.025em;
+}
+[data-theme="practice"] .device-page--practice .device-page__heading h1 { font-size: clamp(30px, 4vw, 44px); }
+[data-theme="practice"] .device-page--practice .device-page__heading p { color: var(--practice-muted); font-size: 15px; }
+[data-theme="practice"] .device-page--practice .device-page__privacy {
+  color: var(--practice-action);
+  background: var(--practice-soft);
+  border-color: var(--practice-border);
+}
+
+[data-theme="practice"] .device-page--practice .device-card,
+[data-theme="practice"] .device-page--practice .device-page__footer {
+  min-width: 0;
+  background: var(--practice-paper);
+  border-color: var(--practice-line);
+  border-radius: 20px;
+  box-shadow: var(--practice-shadow);
+}
+[data-theme="practice"] .device-page--practice .device-card__title h2 { font-size: 19px; }
+[data-theme="practice"] .device-page--practice .device-icon { color: var(--practice-action); background: var(--practice-soft); }
+[data-theme="practice"] .device-page--practice .device-card__title p,
+[data-theme="practice"] .device-page--practice .device-select-label,
+[data-theme="practice"] .device-page--practice .device-helper,
+[data-theme="practice"] .device-page--practice .device-mic-meter__top,
+[data-theme="practice"] .device-page--practice .device-consent-copy,
+[data-theme="practice"] .device-page--practice .device-page__footer-copy small,
+[data-theme="practice"] .device-page--practice .device-text-mode { color: var(--practice-muted); font-size: 13px; }
+[data-theme="practice"] .device-page--practice .device-status { font-size: 12px; }
+[data-theme="practice"] .device-page--practice .device-status--idle {
+  color: var(--practice-muted);
+  background: var(--practice-bg);
+  border-color: var(--practice-line);
+}
+[data-theme="practice"] .device-page--practice .device-status--requesting {
+  color: var(--practice-action);
+  background: var(--practice-soft);
+  border-color: var(--practice-border);
+}
+[data-theme="practice"] .device-page--practice .device-alert { font-size: 13px; }
+
+[data-theme="practice"] .device-page--practice .camera-preview { border-radius: 14px; background: #24211f; }
+[data-theme="practice"] .device-page--practice .camera-preview__empty { color: #fff8ee; }
+[data-theme="practice"] .device-page--practice .camera-preview__empty-icon { color: #ffd9bf; border-color: #655045; background: #3a302a; }
+[data-theme="practice"] .device-page--practice .camera-preview__empty small { color: #ddd0c6; }
+[data-theme="practice"] .device-page--practice .camera-preview__live { background: rgb(36 33 31 / 80%); }
+
+[data-theme="practice"] .device-page--practice .device-camera-actions { flex-wrap: wrap; }
+[data-theme="practice"] .device-page--practice .device-button,
+[data-theme="practice"] .device-page--practice .device-icon-button {
+  min-height: 44px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+[data-theme="practice"] .device-page--practice .device-icon-button { width: 44px; }
+[data-theme="practice"] .device-page--practice .device-button--primary { background: var(--practice-action); box-shadow: none; }
+[data-theme="practice"] .device-page--practice .device-button--primary:hover:not(:disabled) { background: #983900; }
+[data-theme="practice"] .device-page--practice .device-button--secondary,
+[data-theme="practice"] .device-page--practice .device-icon-button,
+[data-theme="practice"] .device-page--practice .device-select {
+  color: var(--practice-ink);
+  background: var(--practice-paper);
+  border-color: var(--practice-border);
+}
+[data-theme="practice"] .device-page--practice .device-button--secondary:hover:not(:disabled),
+[data-theme="practice"] .device-page--practice .device-icon-button:hover {
+  color: var(--practice-action);
+  border-color: var(--practice-brand);
+  background: var(--practice-soft);
+}
+[data-theme="practice"] .device-page--practice .device-select { min-height: 44px; border-radius: 10px; }
+[data-theme="practice"] .device-page--practice :is(button, input, select):focus-visible {
+  outline: 2px solid var(--practice-action);
+  outline-offset: 3px;
+}
+[data-theme="practice"] .device-page--practice .device-mic-meter { background: var(--practice-bg); border-color: var(--practice-line); }
+[data-theme="practice"] .device-page--practice .device-mic-meter__track { background: var(--practice-line); }
+[data-theme="practice"] .device-page--practice .device-mic-meter__track span { background: var(--practice-brand); }
+[data-theme="practice"] .device-page--practice .device-consent-options label {
+  min-height: 44px;
+  color: var(--practice-ink);
+  border-color: var(--practice-border);
+  font-size: 13px;
+}
+[data-theme="practice"] .device-page--practice .device-consent-options label.is-selected {
+  color: var(--practice-action);
+  border-color: var(--practice-brand);
+  background: var(--practice-soft);
+}
+[data-theme="practice"] .device-page--practice input { flex: none; accent-color: var(--practice-action); }
+[data-theme="practice"] .device-page--practice .device-page__footer-copy label { min-height: 30px; font-size: 14px; }
+[data-theme="practice"] .device-page--practice .device-page__footer-copy small svg,
+[data-theme="practice"] .device-page--practice .device-text-mode svg { flex: none; }
+
+@media (max-width: 850px) {
+  [data-theme="practice"] .device-page--practice .device-card__title { flex-wrap: wrap; }
+  [data-theme="practice"] .device-page--practice .device-card__title .device-status { margin-inline-start: auto; }
+}
+
+@media (max-width: 650px) {
+  [data-theme="practice"] .device-page--practice { width: min(540px, 100% - 28px); }
+  [data-theme="practice"] .device-page--practice .device-page__top { margin-bottom: 18px; }
+  [data-theme="practice"] .device-page--practice .device-page__heading { margin-bottom: 18px; }
+  [data-theme="practice"] .device-page--practice .device-card,
+  [data-theme="practice"] .device-page--practice .device-page__footer { padding: 16px; border-radius: 16px; }
+  [data-theme="practice"] .device-page--practice .camera-preview__empty { padding: 10px; gap: 6px; font-size: 13px; }
+  [data-theme="practice"] .device-page--practice .camera-preview__empty-icon { width: 42px; height: 42px; border-radius: 12px; }
+  [data-theme="practice"] .device-page--practice .camera-preview__empty-icon svg { width: 22px; height: 22px; }
+}

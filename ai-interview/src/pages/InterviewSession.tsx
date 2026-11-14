@@ -4,6 +4,7 @@ import BiometricsPanel from '../components/analytics/BiometricsPanel'
 import { useCameraManager } from '../components/camera/CameraManager'
 import { AIStage } from '../components/interview/room/AIStage'
 import { ConfirmExitDialog } from '../components/interview/room/ConfirmExitDialog'
+import { CurrentQuestion } from '../components/interview/room/CurrentQuestion'
 import { InterviewControlDock } from '../components/interview/room/InterviewControlDock'
 import { InterviewHeader } from '../components/interview/room/InterviewHeader'
 import { InterviewSidebar } from '../components/interview/room/InterviewSidebar'
@@ -405,9 +406,10 @@ export function InterviewSession() {
   return <div className="room-page">
     <InterviewHeader config={config} formal={Boolean(formal)} phase={flow.phase} remaining={remaining} number={Math.min(flow.index + 1, questions.length)} total={questions.length} />
     <div className="room-progress" aria-label="面试进度"><span style={{ width: Math.min(100, (flow.index + (flow.followUpPrompt ? 0.5 : 0)) / questions.length * 100) + '%' }} /></div>
+    {!formal && <CurrentQuestion number={flow.index + 1} total={questions.length} prompt={prompt} isFollowUp={Boolean(flow.followUpPrompt)} />}
     <div className="room-workspace">
-      <AIStage phase={flow.phase} prompt={prompt} number={flow.index + 1} ttsAnalyser={ttsAnalyser} micAnalyser={micAnalyser} onReplay={() => playQuestion(true)} onVideoElement={setVideoElement} />
-      <InterviewSidebar number={flow.index + 1} total={questions.length} prompt={prompt} isFollowUp={Boolean(flow.followUpPrompt)} answers={answers} draft={draft} interim={interim} cameraStatus={camera.status} micStatus={micStatus} micLevel={micLevel} notice={visibleNotices.join(' ')} reaction={liveReaction} showBiometrics={!formal} />
+      <AIStage phase={flow.phase} prompt={prompt} number={flow.index + 1} formal={Boolean(formal)} ttsAnalyser={ttsAnalyser} micAnalyser={micAnalyser} onReplay={() => playQuestion(true)} onVideoElement={setVideoElement} />
+      <InterviewSidebar number={flow.index + 1} total={questions.length} prompt={prompt} isFollowUp={Boolean(flow.followUpPrompt)} answers={answers} draft={draft} interim={interim} cameraStatus={camera.status} micStatus={micStatus} micLevel={micLevel} notice={visibleNotices.join(' ')} reaction={liveReaction} showBiometrics={!formal} showQuestion={Boolean(formal)} />
     </div>
     <div className="room-service-line" role="status">{formal ? '岗位 AI 初面 · 硅基流动 DeepSeek 出题' : serviceMode === 'siliconflow' ? '硅基流动 · DeepSeek 个性化出题与动态追问' : '本地题库与规则追问 · 演示模式'} · {ttsSupported ? '浏览器朗读可尝试' : '文字题目'} · {speechSupported ? (isRecognizing ? '浏览器转写已启动' : '浏览器转写可尝试') : '语音转写不可用'} · 文字回答始终可用</div>
     {!formal && <details className="room-bio"><summary>生理信号观察 {bioMode === 'mock' ? '· 演示数据' : '· FacePhys 分段分析'}</summary><BiometricsPanel mode={bioMode} consent={deviceChoices.consent} videoElement={videoElement} onReading={onReading} onModeChange={onModeChange} /></details>}

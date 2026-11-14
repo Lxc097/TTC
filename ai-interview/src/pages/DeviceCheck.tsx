@@ -34,7 +34,7 @@ export function DeviceCheck({ mode = 'mock', formal = false, onContinue, onBack 
   const canContinue = confirmed && (formal || consent !== null);
 
   return (
-    <main className="device-page">
+    <div className={mode === 'mock' && !formal ? 'device-page device-page--practice' : 'device-page'}>
       <div className="device-page__top">
         <button type="button" className="device-back" onClick={onBack}><ArrowLeft size={17} /> 返回</button>
         <span className="device-page__step">设备检测 <span>／</span> {formal ? '岗位 AI 初面' : mode === 'room' ? '加入房间' : '模拟面试'}</span>
@@ -100,7 +100,7 @@ export function DeviceCheck({ mode = 'mock', formal = false, onContinue, onBack 
         <button type="button" className="device-button device-button--primary device-button--continue" disabled={!canContinue} onClick={() => onContinue({ cameraEnabled, microphoneEnabled, consent: !formal && consent === true, cameraDeviceId: camera.selectedDeviceId })}>{mode === 'room' ? '前往等候室' : '开始面试'} <ArrowRight size={18} /></button>
       </footer>
       {!cameraEnabled && <p className="device-text-mode"><Check size={15} /> {mode === 'room' ? '仍可进入演示等候室；当前不会建立真实音视频连接。' : '当前可使用纯文字面试；摄像头不是继续的必要条件。'}</p>}
-    </main>
+    </div>
   );
 }
 

@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { CameraManagerProvider } from './components/camera/CameraManager'
 import './index.css'
+import './practice.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

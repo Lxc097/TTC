@@ -1,0 +1,171 @@
+[data-theme="practice"] {
+  & .report-page {
+    --report-accent: var(--practice-action);
+    --report-track: var(--practice-soft);
+    --report-grid-line: var(--practice-line);
+    --report-label: var(--practice-muted);
+  }
+
+  & :is(.history-header, .report-top) h1,
+  & :is(.report-score h2, .report-facts b, .answer-content h3, .signal-copy h3),
+  & :is(.history-item-body h2, .card-title h2, .score-ring strong) {
+    color: var(--practice-ink);
+  }
+
+  & :is(.history-header p, .report-top p, .history-meta, .history-score small, .history-item-body h2 span),
+  & :is(.report-score p, .score-ring span, .report-facts span, .score-bar-row > div:first-child, .recap-group p),
+  & :is(.answer-meta, .answer-feedback p, .answer-feedback small, .report-section-heading > span:not(.demo-badge)),
+  & :is(.signal-copy p, .signal-stats span, .chart-empty, .report-bottom, .empty-inline) {
+    color: var(--practice-muted);
+  }
+
+  & :is(.history-item, .report-overview, .report-card, .answer-content, .signal-report) {
+    background: var(--practice-paper);
+    border-color: var(--practice-line);
+    border-radius: 20px;
+    box-shadow: var(--practice-shadow);
+  }
+
+  & :is(.history-header + .empty-state, .page-spacing.empty-state) {
+    background: var(--practice-paper);
+    border-color: var(--practice-border);
+  }
+
+  & :is(.history-header + .empty-state, .page-spacing.empty-state) .empty-icon {
+    background: var(--practice-soft);
+    color: var(--practice-action);
+  }
+
+  & :is(.history-header + .empty-state, .page-spacing.empty-state) p {
+    color: var(--practice-muted);
+  }
+
+  & :is(.history-item-icon, .answer-number) {
+    background: var(--practice-soft);
+    color: var(--practice-action);
+  }
+
+  & :is(.history-score, .card-title, .score-bar-row b, .recap-group h3, .answer-meta b,
+  .answer-feedback strong, .signal-copy > svg, .signal-stats strong) {
+    color: var(--practice-action);
+  }
+
+  & :is(.history-item h2, .report-score h2, .card-title h2, .report-section-heading h2, .answer-content h3) {
+    font-family: var(--practice-serif);
+    line-height: 1.45;
+  }
+
+  & :is(.history-item-body h2, .report-facts b, .answer-content h3, .answer-text, .answer-insight) {
+    overflow-wrap: anywhere;
+  }
+
+  & .history-meta {
+    font-size: .82rem;
+    row-gap: 4px;
+  }
+
+  & .history-item-icon {
+    flex: none;
+  }
+
+  & .history-actions {
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  & .history-actions > button {
+    color: var(--practice-muted);
+    display: grid;
+    min-inline-size: 44px;
+    min-block-size: 44px;
+    place-items: center;
+  }
+
+  & .history-actions > button:hover:not(:last-child) {
+    background: var(--practice-soft);
+    color: var(--practice-action);
+  }
+
+  & .report-top-actions,
+  & .answer-meta {
+    flex-wrap: wrap;
+  }
+
+  & .report-score p,
+  & .report-facts span,
+  & .score-bar-row > div:first-child,
+  & .recap-group p,
+  & .answer-text,
+  & .answer-feedback p {
+    font-size: .88rem;
+  }
+
+  & :is(.score-ring > div, .empty-inline) {
+    background: var(--practice-paper);
+  }
+
+  & .report-facts {
+    border-color: var(--practice-line);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  & .score-bar {
+    background: var(--practice-soft);
+  }
+
+  & .score-bar span {
+    background: var(--practice-brand);
+  }
+
+  & :is(.method-note, .answer-text) {
+    background: var(--practice-bg);
+    color: var(--practice-ink);
+  }
+
+  & :is(.method-note, .answer-feedback small, .signal-copy p, .signal-stats span, .chart-empty, .report-bottom) {
+    font-size: .82rem;
+  }
+
+  & .method-note svg {
+    color: var(--practice-action);
+    flex: none;
+  }
+
+  & :is(.recap-group, .answer-feedback) {
+    border-color: var(--practice-border);
+  }
+
+  & .answer-insight--summary {
+    background: var(--practice-soft);
+    border-color: var(--practice-border);
+  }
+
+  & .answer-insight--summary strong {
+    color: var(--practice-action);
+  }
+
+  & .answer-insight p {
+    color: var(--practice-muted);
+  }
+
+  & :is(.signal-copy, .empty-inline) {
+    border-color: var(--practice-line);
+  }
+
+  @media (max-width: 480px) {
+    & .history-score {
+      margin-inline-start: 0;
+      padding-inline: 0;
+    }
+
+    & .report-overview {
+      padding: 18px;
+      gap: 20px;
+    }
+
+    & .report-section-heading {
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+  }
+}

@@ -346,10 +346,11 @@
       + '<div class="intro-points"><div class="intro-point"><i>1</i><span>核对真实房间，查看岗位信息</span></div>'
       + '<div class="intro-point"><i>2</i><span>自己决定是否同意画面分析</span></div>'
       + '<div class="intro-point"><i>3</i><span>面试中可看纪要，结束后查看个人复盘</span></div></div></div>'
-      + '<form id="join-form" class="card join-card"><h2>加入面试</h2><p>房间号由面试官提供；此页面不会创建模拟房间。</p>'
+      + '<form id="join-form" class="card join-card"><h2>加入面试</h2><p>房间号由面试官提供。</p>'
       + '<div class="field"><label for="room-code">六位房间号</label><input id="room-code" class="room-code" maxlength="6" autocomplete="off" spellcheck="false" inputmode="text" placeholder="例如 C7K2P9" required value="' + esc(codeFromUrl().toUpperCase().slice(0, 6)) + '"><span class="field-hint">不区分大小写，请勿输入其他人的房间号。</span></div>'
       + '<p id="join-error" class="inline-error' + (message ? '' : ' hidden') + '" role="alert">' + esc(message || '') + '</p>'
-      + '<button id="join-button" type="submit" class="btn btn-primary btn-block">核对并继续</button></form></div>';
+      + '<button id="join-button" type="submit" class="btn btn-primary btn-block">核对并继续</button>'
+      + '<a class="btn btn-quiet btn-block" href="/ai-interview/">开始 AI 模拟面试</a></form></div>';
     document.getElementById('room-code').addEventListener('input', (event) => { event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6); });
     document.getElementById('join-form').addEventListener('submit', async (event) => {
       event.preventDefault();

@@ -20,6 +20,7 @@ export function AudioWaveform({ analyser, kind, active, className = '', onLevel,
     const canvas = canvasRef.current
     const context = canvas?.getContext('2d')
     if (!canvas || !context) return
+    const aiColor = getComputedStyle(canvas).getPropertyValue('--room-waveform-accent').trim() || '#657df0'
     let frame: number | null = null
     let lastLevelUpdate = 0
     const sampleData = analyser ? new Uint8Array(analyser.fftSize) : null
@@ -29,7 +30,7 @@ export function AudioWaveform({ analyser, kind, active, className = '', onLevel,
       const height = canvas.clientHeight
       context.clearRect(0, 0, width, height)
       context.lineWidth = kind === 'user' ? 2.3 : 2.6
-      context.strokeStyle = kind === 'user' ? '#24a783' : '#657df0'
+      context.strokeStyle = kind === 'user' ? '#24a783' : aiColor
       context.lineJoin = 'round'
       context.lineCap = 'round'
       context.beginPath()
