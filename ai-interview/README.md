@@ -23,7 +23,7 @@ React + TypeScript + Vite 的可运行黑客松 Demo。个人端包含简历上�
     npm run smoke:siliconflow
     npm run dev
 
-冒烟脚本只发一条短消息，并输出回复、prompt_tokens 和 completion_tokens；正式面试不限于一次调用，会按所选难度生成题目并追问。缺少密钥时冒烟脚本直接退出，网站回退本地题库。SILICONFLOW_BASE_URL 默认保留 /v1，SILICONFLOW_MODEL 默认是 deepseek-ai/DeepSeek-V4.1-Flash；要更换模型，修改运行环境中的 SILICONFLOW_MODEL，并先用平台模型列表确认该 ID 可用。可选的非密钥配置见 .env.example。更换 INTERVIEW_API_PORT 时同步修改 vite.config.ts 的代理目标。
+冒烟脚本只发一条短消息，并输出回复、prompt_tokens 和 completion_tokens；正式面试不限于一次调用，会按所选难度生成题目并追问。缺少密钥时冒烟脚本直接退出，网站回退本地题库。SILICONFLOW_BASE_URL 默认保留 /v1，SILICONFLOW_MODEL 默认是 deepseek-ai/DeepSeek-V4-Pro；要更换模型，修改运行环境中的 SILICONFLOW_MODEL，并先用平台模型列表确认该 ID 可用。可选的非密钥配置见 .env.example。更换 INTERVIEW_API_PORT 时同步修改 vite.config.ts 的代理目标。
 
 FacePhys 凭据也只由本地 Node 代理读取。不要写入前端、.env 示例、日志或提交记录；在启动服务的同一个 PowerShell 终端中安全输入：
 

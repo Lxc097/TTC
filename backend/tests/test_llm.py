@@ -8,14 +8,14 @@
 from __future__ import annotations
 
 import os
+import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
-
-os.environ.setdefault("LLM_API_KEY", "test-key")
 
 from shared import config  # noqa: E402
 from shared import llm  # noqa: E402
@@ -137,17 +137,42 @@ class TestGetLlm(unittest.TestCase):
 
     def test_missing_key_returns_none(self):
         config.LLM_ENABLED = True
-        old = os.environ.pop("LLM_API_KEY", None)
-        try:
+        with patch.dict(os.environ, {"SILICONFLOW_API_KEY": "", "LLM_API_KEY": "legacy-only"}):
             self.assertIsNone(llm.get_llm())
-        finally:
-            if old is not None:
-                os.environ["LLM_API_KEY"] = old
 
     def test_enabled_with_key_returns_client(self):
         config.LLM_ENABLED = True
-        os.environ.setdefault("LLM_API_KEY", "test-key")
-        self.assertIsNotNone(llm.get_llm())
+        with patch.dict(os.environ, {"SILICONFLOW_API_KEY": "test-key"}):
+            self.assertIsNotNone(llm.get_llm())
+
+    def test_adapter_defaults_to_siliconflow_without_legacy_key(self):
+        with patch.dict(os.environ, {"SILICONFLOW_API_KEY": "test-key"}, clear=True):
+            client = llm.LLMClient()
+        self.assertEqual(client.base, "https://api.siliconflow.cn/v1")
+        self.assertEqual(client.model, "deepseek-ai/DeepSeek-V4-Pro")
+        self.assertEqual(client.timeout, 30.0)
+
+    def test_chat_keeps_json_contract_on_siliconflow_url(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                pass
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"{\\"semantic\\":0.4}"}}]}'
+
+        client = llm.LLMClient(api_key="test-key", base_url="https://api.siliconflow.cn/v1",
+                               model="deepseek-ai/DeepSeek-V4-Pro", timeout=1)
+        with patch.object(llm.urllib.request, "urlopen", return_value=Response()) as send:
+            self.assertEqual(client._chat([{"role": "user", "content": "test"}]), '{"semantic":0.4}')
+        request = send.call_args.args[0]
+        self.assertEqual(request.full_url, "https://api.siliconflow.cn/v1/chat/completions")
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-key")
+        payload = json.loads(request.data)
+        self.assertEqual(payload["model"], "deepseek-ai/DeepSeek-V4-Pro")
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
 
 
 if __name__ == "__main__":

@@ -4,5 +4,5 @@ python-multipart>=0.0.9
 pydantic>=2.0
 pypdf>=5.0
 python-docx>=1.1
-# 语音转写（阿里云百炼 DashScope）。不装也能跑，只是 STT 关闭、退回手打输入。
-dashscope>=1.20
+# SiliconFlow 语音转写 multipart 上传。
+requests>=2.31

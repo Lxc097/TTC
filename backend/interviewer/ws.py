@@ -28,7 +28,7 @@ from shared.store import STORE, Room, Session
 from shared.vision import get_provider
 
 PROVIDER = get_provider()
-# 分析交给 LLM，测量留给 FacePhys，语音转写交给百炼 ASR。
+# 分析交给 LLM，测量留给 FacePhys，语音转写交给SiliconFlow ASR。
 # 任何一个没配都在运行时降级，不影响主流程。
 LLM = llm_mod.get_llm()
 STT = stt_mod.get_stt()
@@ -327,7 +327,7 @@ class RoomHub:
                 self.stt_warned = True
                 await self.send("interviewer", {
                     "type": "status", "state": "degraded",
-                    "reason": "语音转写未启用（缺 STT_API_KEY），请用手打输入",
+                    "reason": "语音转写未启用（请检查 STT_ENABLED 和 SILICONFLOW_API_KEY），请用手打输入",
                     "t": t})
             return
         # 最多同时转 2 段：1.6 秒一段、单段约 0.85 秒，正常跟得上；

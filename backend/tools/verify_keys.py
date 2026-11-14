@@ -4,7 +4,7 @@
     python tools/verify_keys.py --asr    # 额外跑一次真实转写（极少量费用）
 
 设计原则：默认不花钱。FacePhys 只请求上传签名（不提交检测，不扣 token），
-DeepSeek 和百炼只列模型。
+SiliconFlow 文本分析和转写只列模型。
 """
 from __future__ import annotations
 
@@ -86,38 +86,37 @@ def check_facephys() -> None:
         record("HMAC 签名", False, f"HTTP {code} {hint}")
 
 
-# ---------------------------------------------------------------- DeepSeek
+# ---------------------------------------------------------------- SiliconFlow text analysis
 def check_llm() -> None:
-    print("\n[2] DeepSeek（语义分析 / 写追问 / 报告摘要）")
+    print("\n[2] SiliconFlow（语义分析 / 写追问 / 报告摘要）")
     if not config.LLM_ENABLED:
         record("开关", False, "LLM_ENABLED=0，未启用")
         return
-    key = __import__("os").getenv("LLM_API_KEY", "")
+    key = __import__("os").getenv("SILICONFLOW_API_KEY", "")
     if not key:
-        record("凭据", False, "LLM_API_KEY 未配置")
+        record("凭据", False, "SILICONFLOW_API_KEY 未配置")
         return
-    record("凭据", True, f"已配置；模型 {config.LLM_MODEL}")
+    record("凭据", True, f"已配置；模型 {config.SILICONFLOW_MODEL}")
 
-    code, text = http("GET", f"{config.LLM_BASE_URL.rstrip('/')}/models",
+    code, text = http("GET", f"{config.SILICONFLOW_BASE_URL.rstrip('/')}/models",
                       headers={"Authorization": f"Bearer {key}",
                                "User-Agent": "ttc-verify"})
     record("模型列表", code == 200, f"HTTP {code}")
 
 
-# ---------------------------------------------------------------- 百炼 ASR
+# ---------------------------------------------------------------- SiliconFlow ASR
 def check_stt(do_asr: bool) -> None:
-    print("\n[3] 百炼 ASR（语音转文字）")
+    print("\n[3] SiliconFlow ASR（语音转文字）")
     if not config.STT_ENABLED:
         record("开关", False, "STT_ENABLED=0，未启用（前端会退回手打）")
         return
-    key = config.STT_API_KEY
+    key = config.SILICONFLOW_API_KEY
     if not key:
-        record("凭据", False, "STT_API_KEY 未配置")
+        record("凭据", False, "SILICONFLOW_API_KEY 未配置")
         return
     record("凭据", True, f"已配置；模型 {config.STT_MODEL}")
 
-    code, text = http("GET", "https://dashscope.aliyuncs.com/api/v1/models"
-                      "?page_no=1&page_size=1",
+    code, text = http("GET", f"{config.SILICONFLOW_BASE_URL.rstrip('/')}/models",
                       headers={"Authorization": f"Bearer {key}",
                                "User-Agent": "ttc-verify"})
     record("模型列表", code == 200, f"HTTP {code}")

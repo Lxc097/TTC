@@ -63,7 +63,7 @@ async def private_response_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
-    if request.url.path.startswith(("/api/auth", "/api/applications", "/api/hr", "/api/interview")):
+    if request.url.path.startswith(("/api/auth", "/api/applications", "/api/candidate", "/api/hr", "/api/interview")):
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -139,7 +139,7 @@ def client_config() -> dict:
         "hint_cooldown": config.HINT_COOLDOWN,
         "vision_provider": config.VISION_PROVIDER,
         # 前端据此决定：能不能开语音转写，还是只能用键盘手打
-        "stt_enabled": config.STT_ENABLED and bool(config.STT_API_KEY),
+        "stt_enabled": config.STT_ENABLED and bool(config.SILICONFLOW_API_KEY),
         "stt_model": config.STT_MODEL,
         "llm_enabled": config.LLM_ENABLED,
     }

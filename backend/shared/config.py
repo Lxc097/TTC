@@ -128,23 +128,20 @@ TOKEN_FLOOR = _i("TOKEN_FLOOR", 200_000)
 # 超过就判定本段信号不可靠，不进基线 —— 和"宁可静默不可误报"一致。
 HR_MAX_JUMP = _f("HR_MAX_JUMP", 15.0)
 
-# ---------- 语音转写（ASR）----------
-# 浏览器自带的识别直连 Google，国内不通，所以 ASR 放服务端。
-# 没开或没 key 时，前端自动退回手打输入，纪要功能不受影响。
+# ---------- 语音转写（SiliconFlow ASR）----------
+# 与招聘初筛共用服务端密钥；仍需单独打开转写开关。
+SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "")
+SILICONFLOW_BASE_URL = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
+SILICONFLOW_MODEL = os.getenv("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V4-Pro")
 STT_ENABLED = os.getenv("STT_ENABLED", "0") == "1"
-STT_API_KEY = os.getenv("STT_API_KEY", "")
-STT_MODEL = os.getenv("STT_MODEL", "qwen3-asr-flash")
-# 临时文件目录。只读沙箱里系统临时目录不可写，指向工作区内即可。
-STT_TMP_DIR = os.getenv("STT_TMP_DIR", "")
+STT_MODEL = os.getenv("STT_MODEL", "FunAudioLLM/SenseVoiceSmall")
 
 # ---------- 报告 ----------
 REPORT_MAX_POINTS = _i("REPORT_MAX_POINTS", 3)
 # LLM 负责"分析"（语义判断 / 写追问 / 写总结），FacePhys 只负责"测量"。
 # 没配 key 或关掉时，整条链自动退回模板，不会报错。
 LLM_ENABLED = os.getenv("LLM_ENABLED", "0") == "1"
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
-LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
-LLM_TIMEOUT = _f("LLM_TIMEOUT", 8.0)
+LLM_TIMEOUT = _f("LLM_TIMEOUT", 30.0)
 
 # ---------- Mock 专用 ----------
 # 格式 "30-45,120-140"，表示这些时间段模拟负荷升高，方便排练 demo
