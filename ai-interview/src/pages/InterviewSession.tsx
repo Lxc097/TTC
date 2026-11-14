@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import BiometricsPanel from '../components/analytics/BiometricsPanel'
+import { LivePulsePanel, PULSE_CONTINUE_KEY } from '../components/analytics/LivePulsePanel'
 import { useCameraManager } from '../components/camera/CameraManager'
 import { AIStage } from '../components/interview/room/AIStage'
 import { ConfirmExitDialog } from '../components/interview/room/ConfirmExitDialog'
@@ -63,6 +64,13 @@ export function InterviewSession() {
   const [completionError, setCompletionError] = useState('')
   const [serviceMode, setServiceMode] = useState<InterviewServiceSession['mode']>('local')
   const [bioMode, setBioMode] = useState<BiometricsMode>('mock')
+  const [pulseEnabled, setPulseEnabled] = useState(() => {
+    try {
+      const enabled = sessionStorage.getItem(PULSE_CONTINUE_KEY) === '1'
+      sessionStorage.removeItem(PULSE_CONTINUE_KEY)
+      return enabled
+    } catch { return false }
+  })
   const [liveReaction, setLiveReaction] = useState<QuestionReaction>(() => describeQuestionReaction(null))
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null)
   const startAt = useRef(Date.now())
@@ -411,6 +419,7 @@ export function InterviewSession() {
     </div>
     <div className="room-service-line" role="status">{formal ? '岗位 AI 初面 · 硅基流动 DeepSeek 出题' : serviceMode === 'siliconflow' ? '硅基流动 · DeepSeek 个性化出题与动态追问' : '本地题库与规则追问 · 演示模式'} · {ttsSupported ? '浏览器朗读可尝试' : '文字题目'} · {speechSupported ? (isRecognizing ? '浏览器转写已启动' : '浏览器转写可尝试') : '语音转写不可用'} · 文字回答始终可用</div>
     {!formal && <details className="room-bio"><summary>生理信号观察 {bioMode === 'mock' ? '· 演示数据' : '· FacePhys 分段分析'}</summary><BiometricsPanel mode={bioMode} consent={deviceChoices.consent} videoElement={videoElement} onReading={onReading} onModeChange={onModeChange} /></details>}
+    <LivePulsePanel videoElement={videoElement} cameraReady={camera.status === 'ready' && Boolean(camera.stream)} enabled={pulseEnabled} onEnabledChange={setPulseEnabled} />
     <InterviewControlDock phase={flow.phase} micOn={micStatus === 'ready'} cameraOn={camera.status === 'ready'} muted={muted} autoSubmit={autoSubmit} countdown={countdown} draft={draft} textOpen={textOpen} busy={flow.phase === 'thinking' || flow.phase === 'completed'} allowSkip={!formal || Boolean(flow.followUpPrompt)} onToggleMic={toggleMicrophone} onToggleCamera={() => camera.status === 'ready' ? camera.stop() : void camera.start()} onToggleMute={toggleMute} onAutoSubmitChange={enabled => { setAutoSubmit(enabled); if (enabled) autoCancelledRound.current = false; else cancelCountdown() }} onTextOpenChange={setTextOpen} onDraftChange={text => setAnswerDraft(text, 'text')} onSubmit={() => commitAnswer()} onSkip={() => commitAnswer(true)} onCancelCountdown={() => { autoCancelledRound.current = true; cancelCountdown() }} onExit={() => setConfirmExit(true)} />
     <ConfirmExitDialog open={confirmExit} onCancel={() => setConfirmExit(false)} onConfirm={() => void finish()} />
   </div>

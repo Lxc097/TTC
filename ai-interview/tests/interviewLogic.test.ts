@@ -4,6 +4,7 @@ import { createQuestionPlan } from '../src/services/interviewEngine'
 import { INITIAL_INTERVIEW_FLOW, interviewFlowReducer } from '../src/hooks/interviewFlow'
 import { shouldStartAutoSubmit } from '../src/utils/autoSubmit'
 import { generateInterviewReport } from '../src/utils/report'
+import { estimatePulseBpm, pulseWaveformPath } from '../src/utils/ppg'
 import type { InterviewConfig } from '../src/types/interview'
 
 test('岗位、难度和时长改变实际题目计划', () => {
@@ -51,4 +52,17 @@ test('AI 主题词允许组成词分散出现，仍保持可解释评分', () =>
   })
   assert.equal(report.keywordScore, 100)
   assert.deepEqual(report.questionFeedback[0].matchedKeywords, ['React Profiler', '性能分析'])
+})
+
+test('本机光学心率仅在持续周期信号可靠时显示估计值', () => {
+  const periodic = Array.from({ length: 301 }, (_, index) => ({
+    at: index * 67,
+    value: 0.015 + index * 0.000001 + 0.0015 * Math.sin(2 * Math.PI * 72 / 60 * index * 0.067),
+  }))
+  const bpm = estimatePulseBpm(periodic)
+  assert.ok(bpm !== null && bpm >= 69 && bpm <= 75)
+  assert.equal(estimatePulseBpm(periodic.slice(0, 100)), null)
+  assert.equal(estimatePulseBpm(periodic.map(sample => ({ ...sample, value: 0.015 }))), null)
+  assert.notEqual(pulseWaveformPath(periodic), 'M 0 42 L 600 42')
+  assert.equal(pulseWaveformPath([]), 'M 0 42 L 600 42')
 })
