@@ -1,0 +1,53 @@
+{
+  "fixture": "synthetic resume with three independent award claims",
+  "providerModel": "deepseek-ai/DeepSeek-V4.1-Flash",
+  "baseline": null,
+  "optimized": {
+    "mode": "parallel",
+    "claimWorkers": 3,
+    "wallMs": 7820,
+    "jobElapsedMs": 7793,
+    "status": "completed",
+    "claims": 3,
+    "searchRequests": 3,
+    "modelRequests": 3,
+    "searchErrors": 0,
+    "failedClaims": 0,
+    "searchElapsedMsSum": 1405,
+    "modelElapsedMsSum": 17266,
+    "maxConcurrent": {
+      "search": 3,
+      "ai": 3
+    },
+    "requestCounts": {
+      "search": 3,
+      "ai": 3
+    },
+    "claimStates": [
+      {
+        "category": "award",
+        "searchStatus": "completed",
+        "analysisStatus": "completed",
+        "retryCount": 0,
+        "error": null
+      },
+      {
+        "category": "award",
+        "searchStatus": "completed",
+        "analysisStatus": "completed",
+        "retryCount": 0,
+        "error": null
+      },
+      {
+        "category": "award",
+        "searchStatus": "completed",
+        "analysisStatus": "completed",
+        "retryCount": 0,
+        "error": null
+      }
+    ],
+    "attributionValid": true
+  },
+  "speedup": null,
+  "note": "Parallel three-claim run with live SiliconFlow and UAPI. Concurrency is measured around outbound HTTP inside the global limiter. Isolated temporary SQLite database; external latency can vary. No sequential baseline was run in this ported tree."
+}

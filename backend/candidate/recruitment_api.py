@@ -23,8 +23,9 @@ from candidate import pipeline
 from candidate import recruitment_store as repo
 from candidate.recruitment_evidence import verify_supplied_links
 from candidate.interview_analysis_service import analyze_interview
-from candidate.recruitment_resume import MAX_FILE_BYTES, ResumeError, parse_resume_with_timeout, validate_file
-from jianli.ocr import recognize_scanned_pdf
+from candidate.recruitment_resume import (MAX_FILE_BYTES, ResumeError, parse_resume_with_timeout,
+                                          valid_candidate_name, validate_file)
+from .recruitment_ocr import recognize_scanned_pdf
 from candidate.resume_screening_prompt import PROMPT_VERSION
 from candidate.resume_screening_service import ScreeningError, config as screening_config, screen_resume
 from shared import config
@@ -83,6 +84,10 @@ class ReviewBody(BaseModel):
 
 class CorrectionBody(BaseModel):
     message: str = Field(min_length=10, max_length=1000)
+
+
+class CandidateNameBody(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
 
 
 class CriteriaBody(BaseModel):
@@ -179,6 +184,7 @@ def _candidate_dto(row: dict) -> dict:
     # The query itself excludes reports and review data.
     return {"id": row["id"], "jobId": row["job_id"], "jobTitle": row["job_title"],
             "companyName": row["company_name"], "status": row["status"],
+            "resumeVersion": row["resume_version"],
             "stage": stage, "stageLabel": pipeline.stage_label(stage),
             "resumeStatus": row["resume_status"], "screeningStatus": row["screening_status"],
             "createdAt": row["created_at"], "updatedAt": row["updated_at"],
@@ -210,7 +216,49 @@ def _hr_dto(row: dict, detail: bool = False) -> dict:
     screening = json.loads(row["report_json"]) if row["report_json"] else None
     profile = screening.get("candidateProfile") if screening else None
     profile = profile if isinstance(profile, dict) else {}
-    parsed_resume = json.loads(row["parsed_json"]) if detail and row["parsed_json"] else None
+    parsed_snapshot = json.loads(row["parsed_json"]) if row["parsed_json"] else {}
+    parsed_snapshot = parsed_snapshot if isinstance(parsed_snapshot, dict) else {}
+    parsed_resume = parsed_snapshot if detail else None
+    def preview_items(value: object, count: int) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [text for item in value[:count]
+                if (text := str(item.get("text") if isinstance(item, dict) else item).strip()[:320])]
+    preview = {"education": preview_items(parsed_snapshot.get("education") or profile.get("education"), 3),
+               "workExperience": preview_items(parsed_snapshot.get("workExperience") or profile.get("workExperience"), 3),
+               "projects": preview_items(parsed_snapshot.get("projects"), 3),
+               "achievements": preview_items(parsed_snapshot.get("achievements"), 3),
+               "skills": preview_items(parsed_snapshot.get("skills") or profile.get("skills"), 10),
+               "certifications": preview_items(parsed_snapshot.get("certifications"), 3)}
+    name = next((safe for value in (row["corrected_candidate_name"], profile.get("name"),
+                                   parsed_snapshot.get("name"), row["candidate_name"])
+                 if (safe := valid_candidate_name(value))), "姓名待确认")
+    verification_status = "not_started"
+    weighted_score, scoring_status, profile_version, profile_version_id = None, "pending", None, None
+    try:
+        with repo.db() as connection:
+            verification_row = connection.execute(
+                "SELECT status FROM verification_jobs WHERE application_id=?", (row["id"],)).fetchone()
+        verification_status = verification_row["status"] if verification_row else "not_started"
+    except sqlite3.OperationalError:
+        pass
+    try:
+        with repo.db() as connection:
+            assessment_row = connection.execute("""SELECT hp.id,hp.version,ca.status,ca.report_json
+              FROM hiring_profile_versions hp LEFT JOIN candidate_assessments ca
+                ON ca.application_id=? AND ca.job_id=hp.job_id AND ca.profile_version_id=hp.id
+              WHERE hp.job_id=? ORDER BY hp.version DESC LIMIT 1""",
+              (row["id"], row["job_id"])).fetchone()
+        if assessment_row:
+            profile_version, profile_version_id = assessment_row["version"], assessment_row["id"]
+            scoring_status = assessment_row["status"] or "pending"
+            if assessment_row["status"] == "completed" and assessment_row["report_json"]:
+                assessment_report = json.loads(assessment_row["report_json"])
+                scoring_status = assessment_report.get("scoringStatus") or "incomplete"
+                if scoring_status == "complete":
+                    weighted_score = assessment_report.get("weightedScore")
+    except sqlite3.OperationalError:
+        pass
     imported = row["source"] == "hr_import"
     room = STORE.get_room(row["room_code"]) if row["room_code"] else None
     if (detail and row["invitation_id"]
@@ -238,8 +286,9 @@ def _hr_dto(row: dict, detail: bool = False) -> dict:
                       if room and room.interviewer_ticket else None}
     result = {"id": row["id"], "jobId": row["job_id"], "jobTitle": row["job_title"],
               "companyName": row["company_name"],
-              "candidateName": profile.get("name") or (parsed_resume or {}).get("name") or row["candidate_name"],
-              "candidateEmail": (profile.get("email") or ((parsed_resume or {}).get("contact") or {}).get("email")) if imported
+              "candidateName": name, "resumeVersion": row["resume_version"],
+              "candidatePreview": preview,
+              "candidateEmail": (profile.get("email") or (parsed_snapshot.get("contact") or {}).get("email")) if imported
               else row["candidate_email"], "createdAt": row["created_at"],
               "source": row["source"],
               "attachmentCount": row["attachment_count"],
@@ -249,13 +298,20 @@ def _hr_dto(row: dict, detail: bool = False) -> dict:
               "stageLabel": pipeline.stage_label(pipeline.stage_of(row["status"])),
               "resumeStatus": row["resume_status"],
               "screeningStatus": row["screening_status"],
+              "verificationStatus": verification_status,
               "matchScore": screening["jobMatch"]["score"] if screening else None,
+              "weightedScore": weighted_score, "scoringStatus": scoring_status,
+              "profileVersion": profile_version, "profileVersionId": profile_version_id,
               "recommendation": screening["screeningRecommendation"] if screening else None,
               "reviewStatus": row["review_decision"],
               "aiResultSent": bool(row["invitation_result_sent"]) if row["invitation_id"] else False,
               "invitation": invitation, "humanInterview": _human_interview_dto(row)}
     if detail:
+        from .recruitment_architect_store import profile_for_application
+        hiring_version = profile_for_application(row["id"])
         result.update({"fileName": row["original_name"],
+                       "hiringProfileVersion": hiring_version["version"] if hiring_version else None,
+                       "hiringProfileVersionId": hiring_version["id"] if hiring_version else None,
                        "uploadedBy": row["uploaded_by_name"] if imported else None,
                        "resumeDownloadPath": "/api/hr/applications/" + row["id"] + "/resume",
                        "parsedResume": parsed_resume,
@@ -267,6 +323,7 @@ def _hr_dto(row: dict, detail: bool = False) -> dict:
                        "evidence": repo.list_evidence(row["id"]),
                        "attachments": repo.list_attachments(row["id"]),
                        "corrections": repo.list_corrections(row["id"]),
+                       "nameCorrections": repo.list_candidate_name_corrections(row["id"]),
                        "formalInterview": repo.formal_interview_summary(row["id"]),
                        "interviewRoomReport": repo.interview_report(row["id"]),
                        "review": {"decision": row["review_decision"], "notes": row["review_notes"],
@@ -275,9 +332,11 @@ def _hr_dto(row: dict, detail: bool = False) -> dict:
 
 
 def _process_one(app_id: str) -> None:
+    from .recruitment_progress import record as progress
     row = repo.get_application_by_id(app_id)
     if not row:
         return
+    progress(app_id, "resume_parse", "processing", "正在读取并解析简历")
     try:
         if row["parsed_json"]:
             parsed = json.loads(row["parsed_json"])
@@ -290,23 +349,39 @@ def _process_one(app_id: str) -> None:
             except ResumeError as exc:
                 if kind != "pdf" or "没有提取到足够的可读文字" not in str(exc):
                     raise
+                progress(app_id, "ocr", "processing", "PDF 无可复制文字，正在识别扫描内容")
                 parsed = recognize_scanned_pdf(data)
+                progress(app_id, "ocr", "completed", "扫描版 PDF 文字识别完成")
             repo.save_parsed_resume(app_id, parsed["rawText"], parsed)
+        progress(app_id, "resume_parse", "completed", "简历文件解析完成")
+        fields = sum(bool(parsed.get(key)) for key in
+                     ("education", "workExperience", "projects", "skills", "achievements"))
+        progress(app_id, "structured_resume", "completed", f"已整理 {fields} 类结构化履历信息")
     except (ResumeError, OSError, ValueError) as exc:
         repo.save_resume_failure(app_id, str(exc)[:180])
+        progress(app_id, "resume_parse", "failed", "简历解析失败，可重新解析")
         return
     evidence = verify_supplied_links(parsed.get("portfolioLinks", []), bool(row["verify_links"]))
     repo.save_evidence(app_id, evidence)
+    progress(app_id, "screening", "processing", "正在分析简历与岗位要求")
     try:
+        from .recruitment_architect_store import profile_for_application
+        profile_version = profile_for_application(app_id)
         report, meta = screen_resume(parsed, {"description": row["job_description"],
                                        "title": row["job_title"]}, evidence,
-                                     criteria=row["job_criteria"] or "")
+                                     criteria=row["job_criteria"] or "",
+                                     profile=profile_version["profile"] if profile_version else None)
         repo.save_screening(app_id, report, meta["model"], meta["promptVersion"],
                             meta["attempts"], meta.get("promptTokens"), meta.get("completionTokens"))
+        progress(app_id, "screening", "completed", "AI 初筛报告已保存")
+        from .recruitment_verification import enqueue as enqueue_verification
+        if enqueue_verification(app_id, force=True):
+            progress(app_id, "verification", "queued", "公开声明核查已排队")
     except ScreeningError as exc:
         settings = screening_config()
         repo.save_screening_failure(app_id, str(exc)[:180], settings["model"], PROMPT_VERSION,
                                     exc.attempts or 1)
+        progress(app_id, "screening", "failed", "AI 初筛失败，可单独重试")
 
 
 def _process_interview_analysis(app_id: str) -> None:
@@ -455,11 +530,16 @@ async def submit_application(resume: UploadFile = File(...), jobId: str = Form(.
     try:
         app_id = repo.create_application(user["id"], jobId, name, content_type,
                                          str(target), hashlib.sha256(data).hexdigest(), verifyLinks)
+    except ValueError as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(409, str(exc)) from exc
     except sqlite3.IntegrityError as exc:
         target.unlink(missing_ok=True)
-        raise HTTPException(409, "你已经投递过这个岗位。") from exc
+        raise HTTPException(409, "简历版本保存冲突，请重试。") from exc
+    from .recruitment_progress import record as progress
+    progress(app_id, "resume_parse", "queued", "简历已接收，等待解析")
     row = repo.candidate_application(app_id, user["id"])
-    return {"application": _candidate_dto(row)}
+    return {"taskId": app_id, "application": _candidate_dto(row)}
 
 
 @router.post("/api/hr/resumes/import", status_code=202)
@@ -495,8 +575,10 @@ async def import_hr_resume(resume: UploadFile = File(...), jobId: str = Form(...
     except Exception:
         target.unlink(missing_ok=True)
         raise
+    from .recruitment_progress import record as progress
+    progress(app_id, "resume_parse", "queued", "简历已接收，等待解析")
     row = repo.hr_application(app_id, user["companyId"])
-    return {"application": _hr_dto(row)}
+    return {"taskId": app_id, "application": _hr_dto(row)}
 
 
 @router.get("/api/applications/my")
@@ -554,6 +636,18 @@ def get_hr_application(app_id: str, user: dict = Depends(hr)) -> dict:
     if not row:
         raise HTTPException(404, "申请不存在。")
     return _hr_dto(row, detail=True)
+
+
+@router.patch("/api/hr/applications/{app_id}/candidate-name")
+def correct_hr_candidate_name(app_id: str, body: CandidateNameBody,
+                              user: dict = Depends(hr)) -> dict:
+    try:
+        correction = repo.correct_candidate_name(app_id, user["companyId"], user["id"], body.name)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if not correction:
+        raise HTTPException(404, "申请不存在。")
+    return {**correction, "applicationId": app_id}
 
 
 @router.get("/api/hr/applications/{app_id}/resume")
