@@ -11,6 +11,7 @@
 | 双人面试间：实时信号、追问提示、面试纪要 | 面试官 + 候选人 | `frontend/interviewer/`、`frontend/candidate/` | `backend/interviewer/` + `backend/shared/` | `/classic/`、`/personal/`、`/ws/room/{code}` |
 | 面试报告与候选人个人复盘 | 面试官、候选人 | `frontend/interviewer/`、`frontend/candidate/` | `backend/interviewer/report.py` | 面试结束后的报告页 |
 | 简历投递、申请进度与 HR 初筛 | 候选人、企业 HR | `frontend/candidate/`（apply / applications / account）、`frontend/interviewer/screening.html` | `backend/candidate/`（recruitment_*、resume_screening_*） | `/personal/apply.html`、`/classic/screening.html` |
+| 招聘阶段推进：AI 初面邀请、真人面试安排与结论、邀请记录 | 企业 HR、候选人 | 企业端 `frontend/interviewer/`：`screening.*`（查看简历 / AI 初筛标准）、`ai-results.*`、`human-results.*`、`invites.*`、`recruitment-core.js`；候选人端 `frontend/candidate/status.html` + `recruitment.js`（我的状态，按阶段展示） | `backend/candidate/pipeline.py`、`recruitment_store.py`、`recruitment_api.py` | `/classic/screening.html`、`/classic/ai-results.html`、`/classic/human-results.html`、`/classic/invites.html`、`/personal/status.html` |
 | 正式 AI 初面（出题、追问、回答总结） | 获邀候选人 | `ai-interview/`（React 页面） | `backend/candidate/formal_interview_api.py` + `ai-interview/server/`（Node 侧车） | `/ai-interview/` |
 | 账号与权限隔离 | 候选人、HR | 上述页面 | `backend/candidate/recruitment_api.py` | `/api/auth/*`、`/api/candidate/*`、`/api/hr/*` |
 | 公共基础：配置、信号引擎、模型与视觉适配 | 以上全部 | — | `backend/shared/`、`backend/app.py` | — |
