@@ -1357,7 +1357,7 @@ function page404() {
   return navHtml('404') + '<main class="wrap page page-narrow"><div class="empty">' + I.x + '<div class="big">页面不存在</div><div><a href="#/">回到首页</a></div></div></main>' + footerHtml();
 }
 function footerHtml() {
-  return '<footer class="footer"><div class="wrap row-between"><div>corgi 面试前端 · 学习 corgi.insure 视觉风格的作品。</div>' +
+  return '<footer class="footer"><div class="wrap row-between">' +
     '<div>示例人物为演示；真实房间数据以服务端为准。</div></div></footer>';
 }
 window.addEventListener('hashchange', render);
