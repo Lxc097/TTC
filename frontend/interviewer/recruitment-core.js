@@ -200,7 +200,7 @@
       + (tab.id === activeId ? ' class="active" aria-current="page"' : '')
       + '>' + tab.label + '</a>').join('');
     host.innerHTML = '<header class="nav"><div class="wrap nav-in">'
-      + '<a class="brand" href="screening.html"><img class="screen-brand-logo" src="images/tianjing-logo.png" alt="天镜"><span>天镜</span></a>'
+      + '<a class="brand" href="screening.html"><img class="screen-brand-logo" src="images/tianjing-logo.png" alt="天镜"><span>天镜</span><span class="brand-latin">SkyLens</span></a>'
       + '<nav class="nav-links" aria-label="招聘工作台">' + links + '</nav>'
       + '<div class="nav-right" id="workspace-account"></div>'
       + '</div></header>';
