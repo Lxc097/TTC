@@ -381,25 +381,35 @@
     const recommended = item.recommendation || report.screeningRecommendation;
     const invited = ['ai_interview_invited', 'ai_interview_in_progress', 'ai_interview_completed', 'hr_interview_invited', 'closed'].includes(item.status);
     const imported = item.source === 'hr_import';
-    return '<article class="ws-card" aria-label="候选人 ' + esc(item.candidateName || '候选人') + '">'
-      + '<header class="ws-card-head"><div><span class="eyebrow">候选人 ' + (index + 1) + ' / ' + total + '</span>'
-      + '<h2>' + esc(item.candidateName || '候选人') + '</h2>'
-      + '<p>' + esc(item.jobTitle || '目标岗位') + ' · ' + esc(core.sourceLabel(item.source)) + ' · ' + esc(core.dateLabel(item.createdAt)) + '</p></div>'
-      + '<div class="ws-card-score"><span>初筛建议</span><strong>' + esc(core.recommendationLabel(recommended)) + '</strong>'
-      + '<small>匹配指标 ' + esc(core.scoreLabel(item)) + '</small>' + core.stageChip(item.stage) + '</div></header>'
+    const name = item.candidateName || '候选人';
+    const tone = /^invite/.test(String(recommended)) ? 'green'
+      : recommended === 'manual_review' ? 'amber'
+      : recommended === 'insufficient_evidence' ? 'gray' : 'gray';
+    return '<article class="ws-card" aria-label="候选人 ' + esc(name) + '">'
+      + '<header class="ws-card-head">'
+      + '<span class="ws-avatar" aria-hidden="true">' + esc(String(name).slice(0, 1)) + '</span>'
+      + '<div class="ws-who"><h2>' + esc(name) + '</h2>'
+      + '<p>' + esc(item.jobTitle || '目标岗位') + ' · ' + esc(core.sourceLabel(item.source)) + '</p></div>'
+      + '<span class="ws-badge ' + tone + '">' + esc(core.recommendationLabel(recommended)) + '</span>'
+      + '</header>'
+      + '<div class="ws-meta"><span>' + esc(core.dateLabel(item.createdAt)) + '</span>'
+      + '<span>匹配指标 ' + esc(core.scoreLabel(item)) + '</span>'
+      + core.stageChip(item.stage)
+      + '<span class="ws-index">候选人 ' + (index + 1) + ' / ' + total + '</span></div>'
       + '<div class="ws-card-body">' + resumeBlocks(item, detail) + interviewHint(detail) + '</div>'
       + '<footer class="ws-card-actions">'
-      + '<button type="button" class="btn btn-primary" data-card-action="invite"' + (invited || imported ? ' disabled' : '') + '>'
+      + '<button type="button" class="btn btn-ghost btn-sm" data-card-action="skip"' + (invited ? ' disabled' : '') + '>跳过</button>'
+      + '<button type="button" class="btn btn-primary btn-sm" data-card-action="invite"' + (invited || imported ? ' disabled' : '') + '>'
       + (invited ? '已发送邀请' : imported ? '企业录入不可邀请' : '发送 AI 面试邀请') + '</button>'
-      + '<button type="button" class="btn btn-ghost" data-card-action="skip"' + (invited ? ' disabled' : '') + '>跳过（暂缓）</button>'
-      + '<button type="button" class="btn btn-ghost" data-card-action="resume">查看原简历</button>'
-      + '<a class="btn btn-ghost" href="screening.html?id=' + encodeURIComponent(item.id) + '">完整详情</a>'
+      + '<button type="button" class="btn btn-ghost btn-sm" data-card-action="resume">查看原简历</button>'
+      + '<a class="btn btn-ghost btn-sm" href="screening.html?id=' + encodeURIComponent(item.id) + '">完整详情</a>'
       + '</footer>'
+      + '</article>'
       + '<nav class="ws-card-nav" aria-label="翻页">'
-      + '<button type="button" class="btn btn-ghost btn-sm" data-card-action="prev"' + (index === 0 ? ' disabled' : '') + '>← 上一个</button>'
-      + '<span>' + (index + 1) + ' / ' + total + '</span>'
-      + '<button type="button" class="btn btn-ghost btn-sm" data-card-action="next"' + (index >= total - 1 ? ' disabled' : '') + '>下一个 →</button>'
-      + '</nav></article>';
+      + '<button type="button" class="ws-arrow" data-card-action="prev"' + (index === 0 ? ' disabled' : '') + ' aria-label="上一个">←</button>'
+      + '<span class="ws-counter">' + (index + 1) + ' / ' + total + '</span>'
+      + '<button type="button" class="ws-arrow" data-card-action="next"' + (index >= total - 1 ? ' disabled' : '') + ' aria-label="下一个">→</button>'
+      + '</nav>';
   }
 
   function resumeBlocks(item, detail) {
