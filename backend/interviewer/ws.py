@@ -41,6 +41,9 @@ VIDEO_MODE = bool(getattr(PROVIDER, "wants_video", False))
 SEGMENT_MODE = bool(getattr(PROVIDER, "wants_segment", False))
 SEGMENT_FRAMES = max(10, int(float(os.getenv("VISION_SEGMENT_SECONDS", "12"))
                             * config.FRAME_FPS))
+# 面试官端镜像候选人画面的最小间隔（秒）。候选人按 5fps 上报，
+# 这里默认降到 4fps：面试官只需要"看得见人"，不必把上行再复制一遍。
+PEER_FRAME_INTERVAL = max(0.1, float(os.getenv("PEER_FRAME_INTERVAL", "0.25")))
 
 # 每个房间一个 Hub（连接集合 + 单帧槽位 + 后台 worker）
 HUBS: dict[str, "RoomHub"] = {}
@@ -64,6 +67,7 @@ class RoomHub:
         self.stt_warned = False
         self.stt_fail = 0
         self.stt_inflight = 0
+        self.last_relay = 0.0        # 上一次把画面镜像给面试官的时刻
 
     def server_t(self) -> float:
         """服务端权威时间轴（相对会话开始的秒数）。
@@ -141,6 +145,25 @@ class RoomHub:
             self.seg_buffer.append(frame)   # 片段形态必须保留连续帧
         if not VIDEO_MODE:
             self.frame_ready.set()     # 视频形态不走逐帧路径，别唤醒 worker
+
+    async def relay_frame(self, img: str, t: float) -> None:
+        """把候选人的一帧原样镜像给面试官（只给人看，不进分析链）。
+
+        候选人按 5fps 上报，面试官端只要"能看清人"就够，所以按
+        PEER_FRAME_INTERVAL 限流、丢掉中间帧，避免把上行带宽再复制一份。
+        候选人没授权画面分析时一律不转发 —— 授权是转发的前提。
+        """
+        if not img or not self.conns.get("interviewer"):
+            return
+        session = self.session
+        if session is None or not getattr(session, "consent", False):
+            return
+        now = time.monotonic()
+        if now - self.last_relay < PEER_FRAME_INTERVAL:
+            return
+        self.last_relay = now
+        await self.send("interviewer", {"type": "peer_frame", "img": img,
+                                        "t": round(t, 2)})
 
     # ---------------- 后台视觉 worker ----------------
     async def _vision_worker(self) -> None:
@@ -635,8 +658,10 @@ async def handle_message(hub: RoomHub, role: str, msg: dict) -> None:
     if mtype == "frame":
         if role != "candidate":
             return
-        frame = _decode_frame(msg.get("img", ""))
+        img = msg.get("img", "")
+        frame = _decode_frame(img)
         hub.push_frame(frame, t)
+        await hub.relay_frame(img, t)
 
     elif mtype == "video_chunk":
         # 视频形态：候选人浏览器每 ~30 秒送一段 webm/mp4
