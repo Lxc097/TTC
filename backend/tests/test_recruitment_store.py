@@ -58,10 +58,16 @@ class RecruitmentStoreTests(unittest.TestCase):
         self.assertIsNone(store.hr_application(self.application_id, self.other_hr["companyId"]))
         self.assertEqual(len(store.hr_applications(self.other_hr["companyId"])), 0)
 
-    def test_duplicate_application_and_invitation_are_bounded(self) -> None:
-        with self.assertRaises(sqlite3.IntegrityError):
+    def test_resume_versions_and_invitation_are_bounded(self) -> None:
+        second_id = store.create_application(self.candidate["id"], self.job["id"],
+                                             "second.pdf", "application/pdf",
+                                             "/tmp/second.pdf", "def456", False)
+        self.assertNotEqual(second_id, self.application_id)
+        self.assertEqual([item["resume_version"] for item in
+                          store.candidate_applications(self.candidate["id"])], [2, 1])
+        with self.assertRaises(ValueError):
             store.create_application(self.candidate["id"], self.job["id"],
-                                     "second.pdf", "application/pdf", "/tmp/second.pdf",
+                                     "duplicate.pdf", "application/pdf", "/tmp/duplicate.pdf",
                                      "def456", False)
         first = store.ensure_invitation(self.application_id)
         second = store.ensure_invitation(self.application_id)
@@ -112,12 +118,41 @@ class RecruitmentStoreTests(unittest.TestCase):
                   verify_links INTEGER NOT NULL DEFAULT 0,
                   created_at REAL NOT NULL, updated_at REAL NOT NULL,
                   UNIQUE(candidate_id, job_id))""")
+                connection.executescript("""
+                  CREATE TABLE users (id TEXT PRIMARY KEY);
+                  CREATE TABLE jobs (id TEXT PRIMARY KEY);
+                  CREATE TABLE human_interviews (
+                    application_id TEXT PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
+                    id TEXT NOT NULL, status TEXT NOT NULL, scheduled_at REAL,
+                    created_at REAL NOT NULL, updated_at REAL NOT NULL);
+                  CREATE TABLE interview_reports (
+                    application_id TEXT PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL, report_json TEXT NOT NULL, archived_at REAL NOT NULL);
+                  INSERT INTO users(id) VALUES('legacy-candidate');
+                  INSERT INTO jobs(id) VALUES('legacy-job');
+                  INSERT INTO applications(id,candidate_id,job_id,status,resume_status,
+                    screening_status,created_at,updated_at)
+                    VALUES('legacy-app','legacy-candidate','legacy-job','hr_review',
+                           'parsed','completed',100,100);
+                  INSERT INTO human_interviews(application_id,id,status,created_at,updated_at)
+                    VALUES('legacy-app','legacy-interview','completed',100,101);
+                  INSERT INTO interview_reports(application_id,session_id,report_json,archived_at)
+                    VALUES('legacy-app','legacy-session','{}',102);
+                """)
                 connection.commit()
                 connection.close()
                 store.init_db()
                 with store.db() as migrated:
                     columns = {row[1] for row in migrated.execute("PRAGMA table_info(applications)")}
-                self.assertTrue({"source", "uploaded_by"}.issubset(columns))
+                    interview = migrated.execute("SELECT id FROM human_interviews WHERE application_id=?",
+                                                 ("legacy-app",)).fetchone()
+                    report = migrated.execute("SELECT session_id FROM interview_reports WHERE application_id=?",
+                                              ("legacy-app",)).fetchone()
+                    references_ok = migrated.execute("PRAGMA foreign_key_check").fetchone() is None
+                self.assertTrue({"source", "uploaded_by", "resume_version"}.issubset(columns))
+                self.assertEqual(interview["id"], "legacy-interview")
+                self.assertEqual(report["session_id"], "legacy-session")
+                self.assertTrue(references_ok)
 
 
 if __name__ == "__main__":
