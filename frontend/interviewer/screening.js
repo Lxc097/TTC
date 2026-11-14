@@ -53,7 +53,7 @@
   function renderAuth() {
     let mode = 'login';
     const draw = () => {
-      app.innerHTML = '<div class="screen-auth-layout"><div class="screen-auth-copy"><span class="eyebrow">企业招聘工作台</span><h1>让每一次审核，<br>都有清楚依据。</h1><p>查看岗位匹配证据与 AI 初面结果，推进真人面试并留下可回看的记录。最终招聘决定由企业人员作出。</p></div><section class="card screen-auth-card"><div class="screen-tabs"><button id="screen-login" type="button" class="' + (mode === 'login' ? 'active' : '') + '">登录</button><button id="screen-register" type="button" class="' + (mode === 'register' ? 'active' : '') + '">创建企业账户</button></div><h2>' + (mode === 'login' ? '登录工作台' : '创建企业账户') + '</h2><form id="screen-auth-form">'
+      app.innerHTML = '<div class="screen-auth-layout"><div class="screen-auth-copy"><span class="eyebrow">天镜 · 招聘工作台</span><h1>让每一次审核，<br>都有清楚依据。</h1><p>查看岗位匹配证据与 AI 初面结果，推进真人面试并留下可回看的记录。最终招聘决定由企业人员作出。</p></div><section class="card screen-auth-card"><div class="screen-tabs"><button id="screen-login" type="button" class="' + (mode === 'login' ? 'active' : '') + '">登录</button><button id="screen-register" type="button" class="' + (mode === 'register' ? 'active' : '') + '">创建企业账户</button></div><h2>' + (mode === 'login' ? '登录工作台' : '创建企业账户') + '</h2><form id="screen-auth-form">'
         + (mode === 'register' ? '<label for="screen-name">姓名</label><input id="screen-name" class="input" maxlength="80" autocomplete="name" required placeholder="招聘人员姓名"><label for="screen-company">企业名称</label><input id="screen-company" class="input" maxlength="120" required placeholder="企业名称">' : '')
         + '<label for="screen-email">邮箱</label><input id="screen-email" class="input" type="email" autocomplete="email" required placeholder="name@company.com"><label for="screen-password">密码</label><input id="screen-password" class="input" type="password" autocomplete="' + (mode === 'login' ? 'current-password' : 'new-password') + '" minlength="10" required placeholder="至少 10 位">'
         + (mode === 'register' ? '<label for="screen-code">企业注册授权码</label><input id="screen-code" class="input" type="password" required autocomplete="off" placeholder="由平台管理员提供"><p class="screen-hint">授权码用于限制企业账户注册；请勿发送给候选人。</p>' : '')
@@ -95,7 +95,7 @@
   }
 
   function pageHead(title, desc, actions) {
-    return '<div class="screen-heading"><div><span class="eyebrow">企业端 · 招聘工作台</span><h1>' + esc(title) + '</h1><p>' + esc(desc) + '</p></div>'
+    return '<div class="screen-heading"><div><span class="eyebrow">天镜 招聘 · 企业端</span><h1>' + esc(title) + '</h1><p>' + esc(desc) + '</p></div>'
       + (actions ? '<div class="screen-heading-actions">' + actions + '</div>' : '') + '</div>';
   }
 

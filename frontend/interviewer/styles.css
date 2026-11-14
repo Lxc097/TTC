@@ -78,6 +78,7 @@ p { margin: 0; }
 .nav-in { height: 64px; display: flex; align-items: center; gap: 24px; }
 .brand { display: flex; align-items: center; gap: 8px; font-family: var(--font-serif); font-weight: 700; font-size: 22px; color: var(--ink); }
 .brand-badge { width: 26px; height: 26px; flex: none; }
+.brand img.brand-mark { height: 26px; width: auto; display: block; flex: none; }
 .nav-links { display: flex; gap: 4px; margin-left: 8px; }
 .nav-links a { color: var(--ink-2); font-size: 14px; font-weight: 500; padding: 8px 12px; border-radius: var(--r-pill); }
 .nav-links a:hover { background: var(--gray-1); color: var(--ink); }

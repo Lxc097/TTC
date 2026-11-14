@@ -51,7 +51,7 @@
   }
 
   function pageHead() {
-    return '<div class="screen-heading"><div><span class="eyebrow">企业端 · 招聘工作台</span><h1>AI 面试结果</h1>'
+    return '<div class="screen-heading"><div><span class="eyebrow">天镜 招聘 · 企业端</span><h1>AI 面试结果</h1>'
       + '<p>按题看引用与推理，再决定是否进入真人面试。生理信号与行为信号只在双人面试间采集。</p></div>'
       + '<div class="screen-heading-actions"><a class="btn btn-ghost" href="screening.html#/board">返回查看简历</a></div></div>';
   }
