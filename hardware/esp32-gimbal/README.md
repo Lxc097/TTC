@@ -21,7 +21,7 @@
 
 1. 在 Arduino IDE 安装 Espressif Systems 的 `esp32` 开发板包 3.x。依赖随开发板包提供。可在 IDE 的「其他开发板管理器地址」添加官方[稳定版索引](https://espressif.github.io/arduino-esp32/package_esp32_index.json)，再通过开发板管理器安装。[Espressif 安装说明](https://docs.espressif.com/projects/arduino-esp32/en/latest/installing.html)
 2. 打开 `esp32-gimbal/esp32-gimbal.ino`。选择 `ESP32S3 Dev Module`，将 `Flash Size` 设为 `16MB (128Mb)`、`PSRAM` 设为 `OPI PSRAM`、`Partition Scheme` 设为 `16M Flash (2MB APP/12.5MB FATFS)`。USB 线接背面丝印 `USB` 的接口时，选择 `Hardware CDC and JTAG`、`USB CDC On Boot: Enabled` 和 `Upload Mode: UART0 / Hardware CDC`，再选择 Windows 识别出的串口上传。若需读日志，串口监视器设 `115200`。[Espressif 的 N16R8 和 USB 设置](https://docs.espressif.com/projects/arduino-esp32/en/latest/troubleshooting.html) · [USB CDC 烧录说明](https://docs.espressif.com/projects/arduino-esp32/en/latest/tutorials/cdc_dfu_flash.html)
-3. 手机连 `Lx097`，输入烧录时设置的密码。直接烧录仓库里的示例，密码为 `Gimbal-7628`。手机提示 Wi‑Fi 无互联网时，选择保持连接。用 Safari 或 Chrome 打开 [云台控制页](http://192.168.4.1/)。热点同时允许一台设备连接。
+3. 手机连 `Lxc097`，输入烧录时设置的密码。直接烧录仓库里的示例，密码为 `Gimbal-7628`。手机提示 Wi‑Fi 无互联网时，选择保持连接。用 Safari 或 Chrome 打开 [云台控制页](http://192.168.4.1/)。热点同时允许一台设备连接。遇到同名热点时，可临时关闭那个热点再连接。云台热点在手机 Wi‑Fi 详情里显示的路由器地址是 `192.168.4.1`。
 
 要设置自己的密码，复制草图目录到本地独立位置，在副本中创建 `wifi_local.h`，写入 `#define GIMBAL_AP_PASSWORD "你的密码"`。将引号内替换成 8–63 个 ASCII 字符，再上传这个副本。需要更改热点名时，修改 `AP_NAME`。
 

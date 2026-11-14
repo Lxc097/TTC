@@ -24,7 +24,7 @@
 constexpr uint8_t PAN_PIN = 4;
 constexpr uint8_t TILT_PIN = 5;
 
-constexpr char AP_NAME[] = "Lx097";
+constexpr char AP_NAME[] = "Lxc097";
 constexpr char AP_PASSWORD[] = GIMBAL_AP_PASSWORD;
 static_assert(sizeof(AP_PASSWORD) >= 9 && sizeof(AP_PASSWORD) <= 64,
               "Use an 8 to 63 character Wi-Fi password");
