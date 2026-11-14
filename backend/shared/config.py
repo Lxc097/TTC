@@ -51,8 +51,24 @@ def _load_dotenv(path: Path) -> None:
 
 # 测试/CI 里设 TTC_SKIP_DOTENV=1，避免开发者本地 .env 影响测试结果
 # （本地 .env 里 VISION_PROVIDER=facephys 会让逐帧管道的测试全部失效）
+#
+# .env 到底放哪：**backend/.env**。
+# 这不是随便定的 —— .env.example、deploy/setup.sh、ai-interview 侧车的
+# `--env-file-if-exists=../backend/.env` 全都指向它。
+# 注意这里**不能**再写 Path(__file__).with_name(".env")：config.py 平铺在
+# backend/ 下时它正好是 backend/.env，重构成 backend/shared/ 之后就变成
+# backend/shared/.env，写在 backend/.env 里的 key 会被静默忽略 ——
+# 症状是"明明填了 key，初筛还是报未配置。"
+_DOTENV_CANDIDATES = (
+    Path(__file__).resolve().parent.parent / ".env",   # backend/.env（正解）
+    Path(__file__).resolve().with_name(".env"),        # 旧位置，兼容
+)
+
 if os.getenv("TTC_SKIP_DOTENV") != "1":
-    _load_dotenv(Path(__file__).with_name(".env"))
+    for _candidate in _DOTENV_CANDIDATES:
+        if _candidate.exists():
+            _load_dotenv(_candidate)
+            break
 
 
 def _f(name: str, default: float) -> float:
@@ -112,24 +128,30 @@ TOKEN_FLOOR = _i("TOKEN_FLOOR", 200_000)
 # 超过就判定本段信号不可靠，不进基线 —— 和"宁可静默不可误报"一致。
 HR_MAX_JUMP = _f("HR_MAX_JUMP", 15.0)
 
-# ---------- 语音转写（ASR）----------
-# 浏览器自带的识别直连 Google，国内不通，所以 ASR 放服务端。
-# 没开或没 key 时，前端自动退回手打输入，纪要功能不受影响。
+# ---------- 语音转写（SiliconFlow ASR）----------
+# 与招聘初筛共用服务端密钥；仍需单独打开转写开关。
+SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "")
+SILICONFLOW_BASE_URL = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
+SILICONFLOW_MODEL = os.getenv("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V4-Pro")
 STT_ENABLED = os.getenv("STT_ENABLED", "0") == "1"
-STT_API_KEY = os.getenv("STT_API_KEY", "")
-STT_MODEL = os.getenv("STT_MODEL", "qwen3-asr-flash")
-# 临时文件目录。只读沙箱里系统临时目录不可写，指向工作区内即可。
-STT_TMP_DIR = os.getenv("STT_TMP_DIR", "")
+STT_MODEL = os.getenv("STT_MODEL", "FunAudioLLM/SenseVoiceSmall")
 
 # ---------- 报告 ----------
 REPORT_MAX_POINTS = _i("REPORT_MAX_POINTS", 3)
 # LLM 负责"分析"（语义判断 / 写追问 / 写总结），FacePhys 只负责"测量"。
 # 没配 key 或关掉时，整条链自动退回模板，不会报错。
 LLM_ENABLED = os.getenv("LLM_ENABLED", "0") == "1"
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
-LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
-LLM_TIMEOUT = _f("LLM_TIMEOUT", 8.0)
+LLM_TIMEOUT = _f("LLM_TIMEOUT", 30.0)
 
 # ---------- Mock 专用 ----------
 # 格式 "30-45,120-140"，表示这些时间段模拟负荷升高，方便排练 demo
 MOCK_STRESS_WINDOWS = os.getenv("MOCK_STRESS_WINDOWS", "25-40,85-100")
+
+# ---------- 队友测试通道 ----------
+# 留空 = 不设门。本机开发、跑测试的默认状态就是这个，行为完全不变。
+# 填了之后，除了 /healthz、/.well-known/ 和 CORS 预检，所有页面、接口和
+# WebSocket 都要先输一次口令。它不是账号体系，只回答"拿到这个链接的人
+# 是不是我们组的"；换一个口令 = 把所有已发出的 cookie 立刻作废。
+ACCESS_CODE = os.getenv("TTC_ACCESS_CODE", "").strip()
+# 口令 cookie 的有效天数。0 = 不过期，只能靠换口令吊销。
+ACCESS_CODE_DAYS = _i("TTC_ACCESS_CODE_DAYS", 14)

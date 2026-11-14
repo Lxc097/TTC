@@ -7,7 +7,7 @@
 
 ## 新增：简历投递与内部初筛
 
-本后端现提供独立的招聘申请路由。安装 requirements.txt 后，在服务端环境变量或本机 .env 配置 HR_REGISTRATION_CODE 和 SILICONFLOW_API_KEY；前者只用于创建新企业的初始 HR 账号，不能加入已有企业，新增同企业 HR 尚需管理员邀请机制；后者只在后台初筛任务中调用硅基流动，不能交给浏览器。默认兼容地址为 https://api.siliconflow.cn/v1，默认模型为 deepseek-ai/DeepSeek-V4.1-Flash；SILICONFLOW_BASE_URL、SILICONFLOW_MODEL、SCREENING_TIMEOUT 可覆盖。现有面试语义分析仍使用单独的 LLM_* 配置。
+本后端现提供独立的招聘申请路由。安装 requirements.txt 后，在服务端环境变量或本机 .env 配置 HR_REGISTRATION_CODE 和 SILICONFLOW_API_KEY；前者只用于创建新企业的初始 HR 账号，不能加入已有企业，新增同企业 HR 尚需管理员邀请机制；后者供后台初筛、经典企业面试语义分析及启用后的语音转写共用，不能交给浏览器。默认兼容地址为 https://api.siliconflow.cn/v1，文本分析模型默认为 deepseek-ai/DeepSeek-V4-Pro，转写模型默认为 FunAudioLLM/SenseVoiceSmall；SILICONFLOW_BASE_URL、SILICONFLOW_MODEL、STT_MODEL 可覆盖。语义分析仍由 LLM_ENABLED 单独控制，默认超时为 30 秒，关闭或缺少密钥时退回模板。
 
 用户流程：
 
@@ -353,14 +353,14 @@ LLM        → 读 transcript 判语义回避 + 写追问 + 写报告摘要
 直连 Google，国内实测报 `network`，这条路走不通。
 
 ```
-浏览器 MediaRecorder（4 秒一段，stop/start）→ WS {"type":"audio_chunk"}
-   → stt.py（阿里云百炼 qwen3-asr-flash）→ {"type":"transcript"} 广播两端
+浏览器 MediaRecorder（约 1.6 秒一段，stop/start）→ WS {"type":"audio_chunk"}
+   → stt.py（SiliconFlow SenseVoiceSmall）→ {"type":"transcript"} 广播两端
 ```
 
 - 适配器在 `stt.py`，只认 `transcribe(bytes, fmt) -> str | None`，换供应商只改这一个文件。
-- 实测：165KB 音频转写 **2.5 秒**，中文一字不差。
 - 未配置时前端推一条 `status{degraded}`，手打输入仍然可用，纪要功能不受影响。
-- 同一时间只转一段（`stt_busy`），上段没回来新段直接丢。
+- 同时最多转两段；超过并发上限的片段直接丢弃。
+- 设置 `STT_ENABLED=1` 并配置服务端 `SILICONFLOW_API_KEY`；无需单独的 STT 密钥。
 - 验证脚本：`python tools/test_stt_e2e.py --audio xxx.wav --expect 三年`
 
 ### 触发 → 确认（这是省钱的核心架构）
@@ -443,9 +443,8 @@ set VISION_PROVIDER=real
 | `MOCK_STRESS_WINDOWS` | `25-40,85-100` | mock 模式下模拟负荷升高的时间窗 |
 | `LLM_ENABLED` | `0` | 开启后报告摘要走 LLM，失败自动降级模板 |
 | `STT_ENABLED` | `0` | 语音转写开关（服务端 ASR，会议纪要用） |
-| `STT_API_KEY` | — | 阿里云百炼 key（`qwen3-asr-flash`） |
-| `STT_MODEL` | `qwen3-asr-flash` | ASR 模型名 |
-| `STT_TMP_DIR` | 空 | ASR 临时文件目录，留空用系统临时目录 |
+| `SILICONFLOW_API_KEY` | — | 初筛及经典企业面试转写共用的服务端密钥 |
+| `STT_MODEL` | `FunAudioLLM/SenseVoiceSmall` | ASR 模型名 |
 | `MIN_QUALITY` | `0.5` | 低于此质量的数据直接丢弃 |
 | `VISION_API_URL` | — | 真实 API 地址（`VISION_PROVIDER=real` 时必填） |
 | `VISION_API_KEY` | — | 鉴权用，默认放 `Authorization: Bearer <key>` |

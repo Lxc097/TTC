@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from shared import config
+from access_gate import AccessGate
 from interviewer.api import router
 from candidate.recruitment_api import router as recruitment_router, start_worker, stop_worker
 from jianli.api import router as jianli_router
@@ -62,7 +63,7 @@ async def private_response_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
-    if request.url.path.startswith(("/api/auth", "/api/applications", "/api/hr", "/api/interview")):
+    if request.url.path.startswith(("/api/auth", "/api/applications", "/api/candidate", "/api/hr", "/api/interview")):
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -83,6 +84,11 @@ app.include_router(router)
 app.include_router(recruitment_router)
 app.include_router(jianli_router)
 app.include_router(formal_interview_router)
+
+# 队友测试通道。TTC_ACCESS_CODE 为空时这里什么都不做 —— 本机开发和单测
+# 的行为不变。放在所有中间件之后，让它成为最外层：先验口令，再谈别的。
+if config.ACCESS_CODE:
+    app.add_middleware(AccessGate, code=config.ACCESS_CODE, days=config.ACCESS_CODE_DAYS)
 
 
 @app.on_event("startup")
@@ -133,7 +139,7 @@ def client_config() -> dict:
         "hint_cooldown": config.HINT_COOLDOWN,
         "vision_provider": config.VISION_PROVIDER,
         # 前端据此决定：能不能开语音转写，还是只能用键盘手打
-        "stt_enabled": config.STT_ENABLED and bool(config.STT_API_KEY),
+        "stt_enabled": config.STT_ENABLED and bool(config.SILICONFLOW_API_KEY),
         "stt_model": config.STT_MODEL,
         "llm_enabled": config.LLM_ENABLED,
     }

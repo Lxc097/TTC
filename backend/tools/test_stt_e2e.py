@@ -1,6 +1,6 @@
 """端到端验证：真实音频 → 后端起服务端 ASR → 转写结果回到两端。
 
-前提：后端起着，并且 .env 里 STT_ENABLED=1、STT_API_KEY 有效、装了 dashscope。
+前提：后端起着，并且 .env 里 STT_ENABLED=1、SILICONFLOW_API_KEY 有效、装了 requests。
 
     python tools/test_stt_e2e.py --audio path/to/speech.wav
 """

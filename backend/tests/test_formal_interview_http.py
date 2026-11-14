@@ -132,6 +132,46 @@ class FormalInterviewHttpTests(unittest.TestCase):
         self.assertNotIn("PRIVATE_SCREENING", json.dumps(calls[0][2]))
         self.assertNotIn("PRIVATE_SCREENING", first.text)
 
+    def test_audio_transcription_routes_enforce_formal_ownership_and_accept_raw_audio(self) -> None:
+        self.invite()
+        attempt = self.prepare()["attemptId"]
+        formal_url = "/api/candidate/formal-interview/transcribe"
+        params = {"applicationId": self.app_id, "attemptId": attempt}
+        headers = {"Content-Type": "audio/webm;codecs=opus"}
+        self.assertEqual(self.client.post(formal_url, params=params,
+                                          headers=headers, content=b"sample").status_code, 401)
+        self.assertEqual(self.client.post(formal_url, params=params,
+                                          headers={**headers, **self.auth(self.other)},
+                                          content=b"sample").status_code, 404)
+        self.assertEqual(self.client.post(formal_url, params=params,
+                                          headers={**headers, **self.auth(self.candidate)},
+                                          content=b"sample").status_code, 409)
+        with patch.object(formal, "_sidecar", return_value={
+            "id": "formal-session-audio", "mode": "siliconflow", "questions": QUESTIONS,
+        }):
+            started = self.client.post("/api/interview/sessions",
+                headers=self.auth(self.candidate),
+                json={"applicationId": self.app_id, "attemptId": attempt})
+        self.assertEqual(started.status_code, 200, started.text)
+        candidate_headers = {**headers, **self.auth(self.candidate)}
+        self.assertEqual(self.client.post(formal_url, params=params,
+                                          headers={**candidate_headers, "Content-Type": "text/plain"},
+                                          content=b"sample").status_code, 415)
+        self.assertEqual(self.client.post(formal_url, params=params,
+                                          headers=candidate_headers, content=b"").status_code, 400)
+        with patch.object(formal, "_sidecar_audio", return_value={"text": "你好"}) as sidecar:
+            response = self.client.post(formal_url, params=params,
+                                        headers=candidate_headers, content=b"sample")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json(), {"text": "你好"})
+            sidecar.assert_called_once_with(b"sample", "audio/webm")
+        with patch.object(formal, "_sidecar_audio", return_value={"text": "练习"}) as sidecar:
+            response = self.client.post("/api/interview/transcribe",
+                                        headers=headers, content=b"practice")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json(), {"text": "练习"})
+            sidecar.assert_called_once_with(b"practice", "audio/webm")
+
     def test_saved_question_plan_gates_answers_summaries_and_completion(self) -> None:
         self.invite()
         attempt = self.prepare()["attemptId"]

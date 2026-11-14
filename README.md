@@ -63,7 +63,7 @@ uvicorn app:app --reload --port 8000
 
 候选人在 <http://127.0.0.1:8000/personal/apply.html> 注册或登录，选择企业发布的岗位并上传 PDF/DOCX；在 <http://127.0.0.1:8000/personal/applications.html> 查看申请进度和邀请。企业 HR 在 <http://127.0.0.1:8000/classic/screening.html> 注册或登录，创建岗位、录入 PDF 简历、查看内部初筛报告并人工决定是否邀请 AI 初面。
 
-首次创建企业 HR 账号需服务端配置 HR_REGISTRATION_CODE 并输入开通码；该码只能创建新企业，不能加入已有企业。招聘初筛从服务端读取 SILICONFLOW_API_KEY，默认使用硅基流动兼容地址 https://api.siliconflow.cn/v1 和模型 deepseek-ai/DeepSeek-V4.1-Flash；可通过 SILICONFLOW_BASE_URL、SILICONFLOW_MODEL、SCREENING_TIMEOUT 覆盖。未配置密钥或模型失败时，申请进入人工审核，报告不会伪装成真实 AI 结果。
+首次创建企业 HR 账号需服务端配置 HR_REGISTRATION_CODE 并输入开通码；该码只能创建新企业，不能加入已有企业。招聘初筛从服务端读取 SILICONFLOW_API_KEY，默认使用硅基流动兼容地址 https://api.siliconflow.cn/v1 和模型 deepseek-ai/DeepSeek-V4-Pro；可通过 SILICONFLOW_BASE_URL、SILICONFLOW_MODEL、SCREENING_TIMEOUT 覆盖。经典企业面试语音转写设置 STT_ENABLED=1 后复用同一服务端密钥，默认模型为 FunAudioLLM/SenseVoiceSmall。未配置密钥或模型失败时，申请进入人工审核，报告不会伪装成真实 AI 结果。
 
 申请、结构化报告、令牌哈希和简历原件持久化到 SQLite 与服务端目录，默认 `backend/.local-data/`。可用 RECRUITMENT_DATA_DIR 指定存放位置，RECRUITMENT_RETENTION_DAYS 设置保留天数。
 

@@ -14,13 +14,17 @@ import uuid
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request as FastAPIRequest
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from candidate import recruitment_store as repo
 from candidate.recruitment_api import candidate
 
 router = APIRouter()
+MAX_AUDIO_BYTES = 20 * 1024 * 1024
+AUDIO_TYPES = {"audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg",
+               "audio/mp3", "audio/wav", "audio/x-wav"}
 _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
 
@@ -122,6 +126,26 @@ def _sidecar(method: str, path: str, payload: dict | None = None) -> dict:
     return value
 
 
+def _sidecar_audio(audio: bytes, mime_type: str) -> dict:
+    base = os.getenv("INTERVIEW_SIDECAR_URL", "http://127.0.0.1:8787").rstrip("/")
+    request = Request(base + "/api/interview/transcribe", data=audio, method="POST",
+                      headers={"Content-Type": mime_type})
+    try:
+        with urlopen(request, timeout=75) as response:
+            raw = response.read(20_000)
+    except HTTPError as exc:
+        raise HTTPException(503 if exc.code >= 500 else 502, "语音转写暂不可用。") from None
+    except (URLError, TimeoutError, OSError):
+        raise HTTPException(503, "语音转写暂不可用。") from None
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(502, "语音转写返回无效数据。") from None
+    if not isinstance(value, dict) or not isinstance(value.get("text"), str):
+        raise HTTPException(502, "语音转写返回无效数据。")
+    return {"text": value["text"][:5_000]}
+
+
 def _valid_questions(value: object) -> list[dict]:
     if not isinstance(value, list) or not (1 <= len(value) <= 12):
         raise HTTPException(502, "AI 初面题目无效。")
@@ -198,6 +222,38 @@ def _active_session(app_id: str, attempt_id: str, session_id: str, user: dict) -
     if attempt["status"] != "in_progress" or attempt["session_id"] != session_id:
         raise HTTPException(409, "AI 初面会话已失效，请重新进入邀请。")
     return attempt
+
+
+@router.post("/api/candidate/formal-interview/transcribe")
+async def transcribe_formal_audio(request: FastAPIRequest, applicationId: str, attemptId: str,
+                                  user: dict = Depends(candidate)) -> dict:
+    attempt = _attempt(applicationId, attemptId, user)
+    if attempt["status"] != "in_progress" or not attempt["session_id"]:
+        raise HTTPException(409, "AI 初面尚未开始或已完成。")
+    audio, mime_type = await _validated_audio(request)
+    return await run_in_threadpool(_sidecar_audio, audio, mime_type)
+
+
+async def _validated_audio(request: FastAPIRequest) -> tuple[bytes, str]:
+    mime_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if mime_type not in AUDIO_TYPES:
+        raise HTTPException(415, "不支持的音频格式。")
+    if request.headers.get("content-length", "").isdigit() and int(request.headers["content-length"]) > MAX_AUDIO_BYTES:
+        raise HTTPException(413, "音频超过 20 MB 大小限制。")
+    audio = bytearray()
+    async for chunk in request.stream():
+        audio.extend(chunk)
+        if len(audio) > MAX_AUDIO_BYTES:
+            raise HTTPException(413, "音频超过 20 MB 大小限制。")
+    if not audio:
+        raise HTTPException(400, "没有收到音频。")
+    return bytes(audio), mime_type
+
+
+@router.post("/api/interview/transcribe")
+async def transcribe_practice_audio(request: FastAPIRequest) -> dict:
+    audio, mime_type = await _validated_audio(request)
+    return await run_in_threadpool(_sidecar_audio, audio, mime_type)
 
 
 @router.post("/api/interview/follow-ups")

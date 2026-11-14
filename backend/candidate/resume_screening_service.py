@@ -72,7 +72,7 @@ def config() -> dict:
     return {
         "api_key": os.getenv("SILICONFLOW_API_KEY", "").strip(),
         "base_url": os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1").rstrip("/"),
-        "model": os.getenv("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V4.1-Flash"),
+        "model": os.getenv("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V4-Pro"),
         "timeout": min(120.0, max(5.0, float(os.getenv("SCREENING_TIMEOUT", "90")))),
     }
 

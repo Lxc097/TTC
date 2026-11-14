@@ -5,7 +5,7 @@ import { parseGeneratedQuestions } from '../server/questionPlan'
 
 const config: SiliconFlowConfig = {
   baseUrl: 'https://api.siliconflow.cn/v1',
-  model: 'deepseek-ai/DeepSeek-V4.1-Flash',
+  model: 'deepseek-ai/DeepSeek-V4-Pro',
   apiKey: 'test-secret',
 }
 const messages = [{ role: 'user' as const, content: '你好' }]

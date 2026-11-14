@@ -83,7 +83,7 @@ class PipelineCase(unittest.IsolatedAsyncioTestCase):
         # 单元测试既不该联网也不该花钱。需要测 LLM 的用例自己装假实现。
         self._orig_llm = ws_mod.LLM
         ws_mod.LLM = None
-        # 同理屏蔽真 ASR：本地 .env 里 STT_ENABLED=1 时，发音频会真的调百炼接口
+        # 屏蔽真 ASR：本地 .env 里 STT_ENABLED=1 时，发音频会调 SiliconFlow 接口
         self._orig_stt = ws_mod.STT
         ws_mod.STT = None
 
@@ -740,7 +740,7 @@ class TestAudioChunk(PipelineCase):
 
         statuses = [m for m in self.iws.msgs if m["type"] == "status"]
         self.assertEqual(len(statuses), 1, "只提醒一次，别每段都喊")
-        self.assertIn("STT_API_KEY", statuses[0]["reason"])
+        self.assertIn("SILICONFLOW_API_KEY", statuses[0]["reason"])
         self.assertEqual(self.hub.session.transcript, [])
 
     async def test_stt_exception_does_not_break(self):

@@ -26,7 +26,7 @@
   })();
 
   async function renderList() {
-    app.innerHTML = '<div class="screen-heading"><div><span class="eyebrow">企业端 · 招聘工作台</span><h1>真人面试结果</h1>'
+    app.innerHTML = '<div class="screen-heading"><div><span class="eyebrow">天镜 招聘 · 企业端</span><h1>真人面试结果</h1>'
       + '<p>安排与改期、记录面试官结论，并回看双人面试间的双确认佐证。结论是否发送给候选人由 HR 决定。</p></div>'
       + '<div class="screen-heading-actions"><a class="btn btn-ghost" href="ai-results.html">AI 面试结果</a>'
       + '<a class="btn btn-ghost" href="screening.html#/board">返回查看简历</a></div></div>'

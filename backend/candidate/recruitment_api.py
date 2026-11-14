@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+import access_gate
 from candidate import pipeline
 from candidate import recruitment_store as repo
 from candidate.recruitment_evidence import verify_supplied_links
@@ -26,6 +27,7 @@ from candidate.recruitment_resume import MAX_FILE_BYTES, ResumeError, parse_resu
 from jianli.ocr import recognize_scanned_pdf
 from candidate.resume_screening_prompt import PROMPT_VERSION
 from candidate.resume_screening_service import ScreeningError, config as screening_config, screen_resume
+from shared import config
 from shared.store import STORE, default_questions
 
 router = APIRouter()
@@ -48,8 +50,21 @@ class LoginBody(BaseModel):
 
 
 def demo_enabled(request: Request) -> bool:
+    """本机演示模式是否生效。
+
+    两个判据，满足其一即可：
+
+    1. 客户端是 loopback —— 原判据，只在"同一台机器上直接开浏览器"时成立。
+    2. 测试口令已验证 —— 一旦套上 nginx / cloudflared / frp 之类的反向代理，
+       第 1 条就**永远成立**（代理都是从 127.0.0.1 连过来的），它就不再是安全
+       边界了。所以真正诚实的判据是"这个人是我们放进来的人"，也就是口令。
+
+    换句话说：这道检查拦不住"经过代理的陌生人"，能拦住他们的是 ``AccessGate``。
+    """
     if os.getenv("RECRUITMENT_DEMO_MODE") != "1" or not request.client:
         return False
+    if access_gate.verified_request(request, config.ACCESS_CODE, config.ACCESS_CODE_DAYS):
+        return True
     try:
         return ipaddress.ip_address(request.client.host).is_loopback
     except ValueError:

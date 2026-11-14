@@ -28,7 +28,7 @@ from shared.store import STORE, Room, Session
 from shared.vision import get_provider
 
 PROVIDER = get_provider()
-# 分析交给 LLM，测量留给 FacePhys，语音转写交给百炼 ASR。
+# 分析交给 LLM，测量留给 FacePhys，语音转写交给SiliconFlow ASR。
 # 任何一个没配都在运行时降级，不影响主流程。
 LLM = llm_mod.get_llm()
 STT = stt_mod.get_stt()
@@ -41,6 +41,9 @@ VIDEO_MODE = bool(getattr(PROVIDER, "wants_video", False))
 SEGMENT_MODE = bool(getattr(PROVIDER, "wants_segment", False))
 SEGMENT_FRAMES = max(10, int(float(os.getenv("VISION_SEGMENT_SECONDS", "12"))
                             * config.FRAME_FPS))
+# 面试官端镜像候选人画面的最小间隔（秒）。候选人按 5fps 上报，
+# 这里默认降到 4fps：面试官只需要"看得见人"，不必把上行再复制一遍。
+PEER_FRAME_INTERVAL = max(0.1, float(os.getenv("PEER_FRAME_INTERVAL", "0.2")))
 
 
 def _archive_report(application_id: str, session_id: str, report: dict) -> None:
@@ -76,6 +79,7 @@ class RoomHub:
         self.stt_warned = False
         self.stt_fail = 0
         self.stt_inflight = 0
+        self.last_relay = 0.0        # 上一次把画面镜像给面试官的时刻
 
     def server_t(self) -> float:
         """服务端权威时间轴（相对会话开始的秒数）。
@@ -153,6 +157,25 @@ class RoomHub:
             self.seg_buffer.append(frame)   # 片段形态必须保留连续帧
         if not VIDEO_MODE:
             self.frame_ready.set()     # 视频形态不走逐帧路径，别唤醒 worker
+
+    async def relay_frame(self, img: str, t: float) -> None:
+        """把候选人的一帧原样镜像给面试官（只给人看，不进分析链）。
+
+        候选人按 5fps 上报，面试官端只要"能看清人"就够，所以按
+        PEER_FRAME_INTERVAL 限流、丢掉中间帧，避免把上行带宽再复制一份。
+        候选人没授权画面分析时一律不转发 —— 授权是转发的前提。
+        """
+        if not img or not self.conns.get("interviewer"):
+            return
+        session = self.session
+        if session is None or not getattr(session, "consent", False):
+            return
+        now = time.monotonic()
+        if now - self.last_relay < PEER_FRAME_INTERVAL:
+            return
+        self.last_relay = now
+        await self.send("interviewer", {"type": "peer_frame", "img": img,
+                                        "t": round(t, 2)})
 
     # ---------------- 后台视觉 worker ----------------
     async def _vision_worker(self) -> None:
@@ -304,7 +327,7 @@ class RoomHub:
                 self.stt_warned = True
                 await self.send("interviewer", {
                     "type": "status", "state": "degraded",
-                    "reason": "语音转写未启用（缺 STT_API_KEY），请用手打输入",
+                    "reason": "语音转写未启用（请检查 STT_ENABLED 和 SILICONFLOW_API_KEY），请用手打输入",
                     "t": t})
             return
         # 最多同时转 2 段：1.6 秒一段、单段约 0.85 秒，正常跟得上；
@@ -645,6 +668,47 @@ def _decode_frame(data_url: str) -> bytes | None:
         return None
 
 
+RTC_SUBS = {"offer", "answer", "ice", "ready", "bye"}
+# SDP 通常 3~6KB，ICE 候选几百字节。设上限是因为这条消息和画面帧共用
+# 同一条接收循环，别让一个畸形的大包把候选人端的上行堵住。
+RTC_MAX_SDP = 20000
+RTC_MAX_CANDIDATE = 2000
+
+
+async def relay_rtc(hub: RoomHub, role: str, msg: dict) -> None:
+    """把 WebRTC 信令原样转给对端，服务器不解析 SDP。
+
+    媒体走浏览器之间的点对点通道，这里只搬几百字节的信令：
+    候选人发 offer、面试官回 answer，ICE 候选双向 trickle。
+    信令丢了不影响面试 —— 画面还有逐帧 JPEG 通道兜底。
+    """
+    sub = msg.get("sub")
+    if sub not in RTC_SUBS:
+        return
+    payload: dict = {"type": "rtc", "from": role, "sub": sub}
+
+    sdp = msg.get("sdp")
+    if isinstance(sdp, dict) and isinstance(sdp.get("sdp"), str) \
+            and len(sdp["sdp"]) <= RTC_MAX_SDP:
+        payload["sdp"] = {"type": sdp.get("type"), "sdp": sdp["sdp"]}
+
+    candidate = msg.get("candidate")
+    if isinstance(candidate, dict) and isinstance(candidate.get("candidate"), str) \
+            and len(candidate["candidate"]) <= RTC_MAX_CANDIDATE:
+        payload["candidate"] = {
+            "candidate": candidate["candidate"],
+            "sdpMid": candidate.get("sdpMid"),
+            "sdpMLineIndex": candidate.get("sdpMLineIndex"),
+        }
+
+    peer = "interviewer" if role == "candidate" else "candidate"
+    if sub != "ice":
+        # ICE 候选太多不打印；offer/answer/ready/bye 各留一行，排查时能看出
+        # 到底是没发信令、还是发了但 ICE 打不通
+        print(f"[rtc] room={hub.room.code} {role}->{peer} {sub}", flush=True)
+    await hub.send(peer, payload)
+
+
 async def handle_message(hub: RoomHub, role: str, msg: dict) -> None:
     # 时间一律由服务端给：客户端 t 只在会话尚未建立时兜底
     t = hub.server_t() if hub.session is not None else float(msg.get("t", 0) or 0)
@@ -653,8 +717,10 @@ async def handle_message(hub: RoomHub, role: str, msg: dict) -> None:
     if mtype == "frame":
         if role != "candidate":
             return
-        frame = _decode_frame(msg.get("img", ""))
+        img = msg.get("img", "")
+        frame = _decode_frame(img)
         hub.push_frame(frame, t)
+        await hub.relay_frame(img, t)
 
     elif mtype == "video_chunk":
         # 视频形态：候选人浏览器每 ~30 秒送一段 webm/mp4
@@ -695,6 +761,21 @@ async def handle_message(hub: RoomHub, role: str, msg: dict) -> None:
         # 只有面试官能结束整场，候选人最多退出连接
         if role == "interviewer":
             await hub.on_end()
+
+    elif mtype == "rtc":
+        # 点对点视频信令：只转给对端，不落库、不进分析链。
+        await relay_rtc(hub, role, msg)
+
+    elif mtype == "diag":
+        # 浏览器端把 WebRTC 连接诊断送上来，直接写进 journal。
+        # 用户看不懂 chrome://webrtc-internals，但这里能一眼看出卡在哪一步。
+        data = msg.get("data") or {}
+        try:
+            blob = json.dumps(data, ensure_ascii=False)[:600]
+        except Exception:
+            blob = "{}"
+        print(f"[diag] room={hub.room.code} role={role} ev={msg.get('ev')} {blob}",
+              flush=True)
 
     elif mtype == "ping":
         await hub.send(role, {"type": "pong", "t": t})

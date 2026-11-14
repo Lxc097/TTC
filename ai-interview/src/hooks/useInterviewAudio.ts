@@ -3,34 +3,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 export type MicrophoneStatus = 'idle' | 'requesting' | 'ready' | 'denied' | 'unavailable' | 'error'
 export type SpeechOutcome = 'ended' | 'cancelled' | 'error'
 
-interface RecognitionAlternative { transcript: string }
-interface RecognitionResult extends ArrayLike<RecognitionAlternative> { isFinal: boolean }
-interface RecognitionEvent { resultIndex: number; results: ArrayLike<RecognitionResult> }
-interface RecognitionErrorEvent { error?: string }
-interface BrowserRecognition {
-  lang: string
-  continuous: boolean
-  interimResults: boolean
-  onstart: (() => void) | null
-  onresult: ((event: RecognitionEvent) => void) | null
-  onerror: ((event: RecognitionErrorEvent) => void) | null
-  onend: (() => void) | null
-  start(): void
-  stop(): void
-  abort(): void
-}
-type RecognitionConstructor = new () => BrowserRecognition
-type SpeechWindow = Window & {
-  SpeechRecognition?: RecognitionConstructor
-  webkitSpeechRecognition?: RecognitionConstructor
-}
-
-function recognitionConstructor(): RecognitionConstructor | undefined {
-  if (typeof window === 'undefined') return undefined
-  const target = window as SpeechWindow
-  return target.SpeechRecognition || target.webkitSpeechRecognition
-}
-
 function microphoneError(error: unknown): { status: MicrophoneStatus; message: string } {
   const name = error instanceof DOMException ? error.name : ''
   if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
@@ -40,19 +12,6 @@ function microphoneError(error: unknown): { status: MicrophoneStatus; message: s
     return { status: 'unavailable', message: '未找到可用麦克风。你仍可使用文字回答。' }
   }
   return { status: 'error', message: '麦克风启动失败。请检查设备是否被其他应用占用。' }
-}
-
-export function recognitionFailureMessage(code?: string): string {
-  switch (code) {
-    case 'not-allowed':
-    case 'service-not-allowed': return '浏览器未允许语音识别服务。请检查麦克风权限，或直接输入文字回答。'
-    case 'audio-capture': return '语音识别未收到麦克风音频。请检查输入设备；文字回答仍可正常提交。'
-    case 'network': return '浏览器语音识别服务连接失败。可直接输入文字回答。'
-    case 'language-not-supported': return '浏览器语音识别不支持中文。请使用文字输入。'
-    case 'no-speech': return '没有识别到有效语音。可以重试，或直接输入文字回答。'
-    case 'aborted': return '语音识别已停止。可以直接输入文字回答。'
-    default: return '语音识别暂时不可用。请使用文字输入，或检查浏览器与输入设备。'
-  }
 }
 
 export function synthesisFailureMessage(code?: string): string {
@@ -68,6 +27,7 @@ export function synthesisFailureMessage(code?: string): string {
 }
 
 export interface InterviewAudioOptions {
+  transcribeAudio?: (audio: Blob) => Promise<string>
   onTranscript?: (text: string, isFinal: boolean) => void
   onRecognitionEnd?: () => void
   onRecognitionError?: (message: string) => void
@@ -96,8 +56,12 @@ export function useInterviewAudio(options: InterviewAudioOptions = {}) {
   const micEndedRef = useRef<(() => void) | null>(null)
   const voiceActiveRef = useRef(false)
   const noiseFloorRef = useRef(0.008)
-  const recognitionRef = useRef<BrowserRecognition | null>(null)
-  const recognitionHintTimerRef = useRef<number | null>(null)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const recorderTimerRef = useRef<number | null>(null)
+  const recordingRunRef = useRef(0)
+  const segmentDoneRef = useRef<Promise<void>>(Promise.resolve())
+  const transcriptionQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const stopRecognitionRef = useRef<Promise<void> | null>(null)
   const speechAudioRef = useRef<HTMLAudioElement | null>(null)
   const speechContextRef = useRef<AudioContext | null>(null)
   const speechSourceRef = useRef<MediaElementAudioSourceNode | null>(null)
@@ -117,7 +81,7 @@ export function useInterviewAudio(options: InterviewAudioOptions = {}) {
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [ttsAnalyser, setTtsAnalyser] = useState<AnalyserNode | null>(null)
   const [speechError, setSpeechError] = useState<string | null>(null)
-  const speechSupported = Boolean(recognitionConstructor())
+  const speechSupported = typeof MediaRecorder !== 'undefined'
   const ttsSupported = typeof window !== 'undefined' && 'speechSynthesis' in window
 
   const closeMicrophoneGraph = useCallback(() => {
@@ -249,81 +213,83 @@ export function useInterviewAudio(options: InterviewAudioOptions = {}) {
     }
   }, [stopMicrophone])
 
-  const stopRecognition = useCallback(() => {
-    if (recognitionHintTimerRef.current !== null) window.clearTimeout(recognitionHintTimerRef.current)
-    recognitionHintTimerRef.current = null
-    const current = recognitionRef.current
-    recognitionRef.current = null
-    if (current) {
-      current.onstart = null
-      current.onresult = null
-      current.onerror = null
-      current.onend = null
-      try { current.stop() } catch { /* Already stopped. */ }
-    }
-    if (mounted.current) setIsRecognizing(false)
+  const stopRecognition = useCallback((flush = false): Promise<void> => {
+    if (stopRecognitionRef.current) return stopRecognitionRef.current
+    const recorder = recorderRef.current
+    if (!recorder) return Promise.resolve()
+    recorderRef.current = null
+    if (recorderTimerRef.current !== null) window.clearTimeout(recorderTimerRef.current)
+    recorderTimerRef.current = null
+    const run = recordingRunRef.current
+    if (!flush) recordingRunRef.current += 1
+    if (recorder.state === 'recording') recorder.stop()
+    const pending = (async () => {
+      await segmentDoneRef.current
+      if (flush) await transcriptionQueueRef.current
+      if (recordingRunRef.current === run) {
+        recordingRunRef.current += 1
+        callbacks.current.onRecognitionEnd?.()
+      }
+      if (!recorderRef.current && mounted.current) setIsRecognizing(false)
+    })()
+    stopRecognitionRef.current = pending.finally(() => { stopRecognitionRef.current = null })
+    return stopRecognitionRef.current
   }, [])
 
   const startRecognition = useCallback((): boolean => {
-    if (recognitionRef.current) return true
+    if (recorderRef.current) return true
+    if (stopRecognitionRef.current) return false
     if (micStreamRef.current?.getAudioTracks()[0]?.readyState !== 'live') {
       callbacks.current.onRecognitionError?.('请先开启麦克风；也可以直接输入文字回答。')
       return false
     }
-    const Constructor = recognitionConstructor()
-    if (!Constructor) {
-      callbacks.current.onRecognitionError?.('当前浏览器不支持语音转写，请使用文字输入。')
+    if (!speechSupported || !callbacks.current.transcribeAudio) {
+      callbacks.current.onRecognitionError?.('当前语音转写不可用，请使用文字输入。')
       return false
     }
     try {
-      const recognition = new Constructor()
-      recognition.lang = 'zh-CN'
-      recognition.continuous = true
-      recognition.interimResults = true
-      recognition.onstart = () => {
-        if (mounted.current) setIsRecognizing(true)
-        recognitionHintTimerRef.current = window.setTimeout(() => {
-          if (recognitionRef.current === recognition) callbacks.current.onRecognitionError?.('暂未收到可用语音转写。请检查输入设备，或直接输入文字回答。')
-        }, 15_000)
+      const stream = micStreamRef.current
+      const run = ++recordingRunRef.current
+      const mimeType = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm', 'audio/ogg;codecs=opus']
+        .find(type => MediaRecorder.isTypeSupported(type))
+      const recordSegment = () => {
+        if (!stream || recordingRunRef.current !== run || stream.getAudioTracks()[0]?.readyState !== 'live') return
+        const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+        const chunks: Blob[] = []
+        segmentDoneRef.current = new Promise<void>(resolve => {
+          recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data) }
+          recorder.onstop = () => {
+            if (recorderTimerRef.current !== null) window.clearTimeout(recorderTimerRef.current)
+            recorderTimerRef.current = null
+            if (recordingRunRef.current === run && chunks.length) {
+              const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+              transcriptionQueueRef.current = transcriptionQueueRef.current.then(async () => {
+                const text = (await callbacks.current.transcribeAudio?.(blob))?.trim()
+                if (text && recordingRunRef.current === run) callbacks.current.onTranscript?.(text, true)
+              }).catch(() => {
+                if (recordingRunRef.current === run) callbacks.current.onRecognitionError?.('语音转写失败，请重试或直接输入文字。')
+              })
+            }
+            resolve()
+            if (recorderRef.current === recorder && recordingRunRef.current === run) recordSegment()
+          }
+        })
+        recorderRef.current = recorder
+        recorder.start()
+        recorderTimerRef.current = window.setTimeout(() => {
+          if (recorder.state === 'recording') recorder.stop()
+        }, 12_000)
       }
-      recognition.onresult = event => {
-        if (recognitionHintTimerRef.current !== null) window.clearTimeout(recognitionHintTimerRef.current)
-        recognitionHintTimerRef.current = null
-        for (let index = event.resultIndex; index < event.results.length; index += 1) {
-          const result = event.results[index]
-          const text = result?.[0]?.transcript?.trim()
-          if (text) callbacks.current.onTranscript?.(text, Boolean(result.isFinal))
-        }
-      }
-      recognition.onerror = event => {
-        const message = recognitionFailureMessage(event.error)
-        if (recognitionHintTimerRef.current !== null) window.clearTimeout(recognitionHintTimerRef.current)
-        recognitionHintTimerRef.current = null
-        if (recognitionRef.current === recognition) recognitionRef.current = null
-        callbacks.current.onRecognitionError?.(message)
-        if (mounted.current) setIsRecognizing(false)
-      }
-      recognition.onend = () => {
-        if (recognitionRef.current !== recognition) return
-        if (recognitionHintTimerRef.current !== null) window.clearTimeout(recognitionHintTimerRef.current)
-        recognitionHintTimerRef.current = null
-        recognitionRef.current = null
-        if (mounted.current) setIsRecognizing(false)
-        // Chrome may end a continuous recognition session after a pause or a
-        // browser-side timeout. This is a normal lifecycle event, not an
-        // error; only explicit recognition errors should show an alert.
-        callbacks.current.onRecognitionEnd?.()
-      }
-      recognitionRef.current = recognition
-      recognition.start()
+      recordSegment()
+      if (mounted.current) setIsRecognizing(true)
       return true
     } catch {
-      recognitionRef.current = null
+      recorderRef.current = null
       if (mounted.current) setIsRecognizing(false)
-      callbacks.current.onRecognitionError?.('无法启动语音识别，请检查浏览器权限并使用文字输入。')
+      callbacks.current.onRecognitionError?.('无法开始录音转写，请检查浏览器权限并使用文字输入。')
       return false
     }
-  }, [])
+  }, [speechSupported])
 
   const finishSpeech = useCallback((outcome: SpeechOutcome) => {
     const complete = speechCompletionRef.current
@@ -468,7 +434,7 @@ export function useInterviewAudio(options: InterviewAudioOptions = {}) {
     mounted.current = true
     return () => {
       mounted.current = false
-      stopRecognition()
+      void stopRecognition()
       stopSpeech()
       stopMicrophone()
     }

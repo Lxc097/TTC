@@ -53,6 +53,18 @@ function isQuestionPlan(value: unknown): value is InterviewQuestion[] {
       && typeof item.prompt === 'string' && Array.isArray(item.keywords))
 }
 
+export async function transcribePracticeAudio(audio: Blob): Promise<string> {
+  const response = await fetch('/api/interview/transcribe', {
+    method: 'POST', cache: 'no-store',
+    headers: { 'Content-Type': audio.type || 'audio/webm' },
+    body: audio,
+  })
+  if (!response.ok) throw new Error((await readPublicError(response)) || '语音转写服务暂不可用。')
+  const data = await response.json() as { text?: unknown }
+  if (typeof data.text !== 'string') throw new Error('语音转写服务返回无效数据。')
+  return data.text.trim()
+}
+
 const pendingStarts = new Map<string, Promise<InterviewServiceSession>>()
 
 /** Deduplicate React development-effect replays so one setup creates one paid question plan. */

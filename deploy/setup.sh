@@ -55,16 +55,20 @@ if [ ! -f "$ENV_FILE" ]; then
 # 要开真实能力，把下面两项改成 facephys / 1，并填上 key（改完 systemctl restart ttc-backend）。
 VISION_PROVIDER=mock
 LLM_ENABLED=0
+STT_ENABLED=0
 
 # FacePhys（真实心率需要它）
 TTC_API_BASE=https://www.facephys.com
 TTC_API_KEY_ID=
 TTC_API_SECRET=
 
-# LLM（语义分析 / 写追问）
-LLM_BASE_URL=https://api.deepseek.com
-LLM_MODEL=deepseek-chat
-LLM_API_KEY=
+# SiliconFlow（语义分析、出题、初筛和语音转写）
+SILICONFLOW_API_KEY=
+SILICONFLOW_BASE_URL=https://api.siliconflow.cn/v1
+SILICONFLOW_MODEL=deepseek-ai/DeepSeek-V4-Pro
+SILICONFLOW_ASR_MODEL=FunAudioLLM/SenseVoiceSmall
+STT_MODEL=FunAudioLLM/SenseVoiceSmall
+LLM_TIMEOUT=30
 
 # 视频形态的调参
 MIN_QUALITY=0.15

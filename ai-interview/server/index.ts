@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { DIFFICULTY_PROFILES } from '../src/data/difficultyProfiles'
 import { createQuestionPlan } from '../src/services/interviewEngine'
 import { ROLE_LABELS, TYPE_LABELS, type InterviewConfig, type InterviewQuestion } from '../src/types/interview'
-import { createChatCompletion, getSiliconFlowConfig, SiliconFlowError } from './siliconflow'
+import { createAudioTranscription, createChatCompletion, getSiliconFlowConfig, SiliconFlowError } from './siliconflow'
 import { generateQuestionPlan } from './questionPlan'
 import { analyzeFacePhysVideo, FacePhysError, getFacePhysConfig, isFacePhysConfigured } from './facephys'
 
@@ -22,6 +22,12 @@ const configured = Boolean(llm.apiKey)
 const facephys = getFacePhysConfig()
 const facephysConfigured = isFacePhysConfigured(facephys)
 const maxVideoBytes = 40 * 1024 * 1024
+const maxAudioBytes = 20 * 1024 * 1024
+const audioTypes = new Set(['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav'])
+
+class AudioRequestError extends Error {
+  constructor(readonly status: number, message: string) { super(message) }
+}
 
 function safeFacePhysError(error: unknown): string {
   let raw = error instanceof Error ? error.message : '未知错误'
@@ -70,6 +76,19 @@ async function readVideo(request: IncomingMessage): Promise<Uint8Array> {
     if (length > maxVideoBytes) throw new FacePhysError(413, 'FacePhys 视频超过 40 MB 大小限制。')
     chunks.push(bytes)
   }
+  return Buffer.concat(chunks)
+}
+
+async function readAudio(request: IncomingMessage): Promise<Uint8Array> {
+  const chunks: Buffer[] = []
+  let length = 0
+  for await (const chunk of request) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    length += bytes.length
+    if (length > maxAudioBytes) throw new AudioRequestError(413, '音频超过 20 MB 大小限制。')
+    chunks.push(bytes)
+  }
+  if (!length) throw new AudioRequestError(400, '没有收到音频。')
   return Buffer.concat(chunks)
 }
 
@@ -165,6 +184,29 @@ const server = createServer(async (request, response) => {
 
   if (request.method === 'GET' && path === '/api/biometrics/status') {
     json(response, 200, { configured: facephysConfigured, captureSeconds: 30, mode: 'video-batch' })
+    return
+  }
+
+  if (request.method === 'POST' && path === '/api/interview/transcribe') {
+    if (!configured) {
+      json(response, 503, { error: 'SILICONFLOW_API_KEY 未设置；语音转写暂不可用。' })
+      return
+    }
+    const mimeType = String(request.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase()
+    if (!audioTypes.has(mimeType)) {
+      json(response, 415, { error: '不支持的音频格式。' })
+      return
+    }
+    try {
+      const audio = await readAudio(request)
+      const text = await createAudioTranscription(llm, audio, mimeType)
+      json(response, 200, { text })
+    } catch (error) {
+      if (error instanceof AudioRequestError) json(response, error.status, { error: error.message })
+      else if (error instanceof SiliconFlowError) json(response, error.status, { error: error.message })
+      else if (error instanceof Error && error.name === 'TimeoutError') json(response, 504, { error: '语音转写超时，请重试或使用文字输入。' })
+      else json(response, 502, { error: '语音转写暂不可用，请重试或使用文字输入。' })
+    }
     return
   }
 

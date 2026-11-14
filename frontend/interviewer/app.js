@@ -39,6 +39,30 @@ function importInvitedRoomLink() {
   return false;
 }
 
+/* ---------- 设备识别 ----------
+   布局切换全部交给 CSS 媒体查询（桌面规则一行没改）；
+   这里只标记设备类型，供运行期分支使用（帧率、邀请链接渲染等）。
+   只切属性、不重渲染：resize 不会打断正在跑的 WebSocket。 */
+const MOBILE_MQ = window.matchMedia('(max-width: 760px)');
+const TOUCH = (navigator.maxTouchPoints || 0) > 0;
+const isMobile = () => MOBILE_MQ.matches;
+function detectDevice() {
+  if (isMobile()) return 'mobile';
+  return (TOUCH && window.innerWidth <= 1024) ? 'tablet' : 'desktop';
+}
+function syncDevice() {
+  const kind = detectDevice();
+  document.documentElement.dataset.device = kind;
+  document.documentElement.classList.toggle('is-mobile', kind === 'mobile');
+}
+syncDevice();
+(function watchDevice() {
+  const onChange = () => syncDevice();
+  if (MOBILE_MQ.addEventListener) MOBILE_MQ.addEventListener('change', onChange);
+  else if (MOBILE_MQ.addListener) MOBILE_MQ.addListener(onChange);
+  window.addEventListener('orientationchange', () => later(onChange, 120));
+})();
+
 function toast(msg) {
   const old = $('.toast'); if (old) old.remove();
   const el = document.createElement('div');
@@ -47,11 +71,34 @@ function toast(msg) {
   later(() => el.remove(), 2200);
 }
 
+/* 复制：https 下用 clipboard，http 或微信内置浏览器里退回 execCommand */
+function copyText(text, okMsg) {
+  const ok = () => toast(okMsg || '已复制');
+  const fail = () => toast('复制失败：请长按手动复制');
+  if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(ok, fail);
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none;';
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  let done = false;
+  try { done = document.execCommand('copy'); } catch (_) { done = false; }
+  ta.remove();
+  done ? ok() : fail();
+}
+
 
 /* ---------- backend bridge ---------- */
-// 后端地址：部署在域名下（80/443）走同源，nginx 反代 /api 和 /ws；
-// 本地开发（8080/5500 等）仍然连 127.0.0.1:8000。
-// 写死成 127.0.0.1 的话，上线后浏览器会去连访客自己的本机，必然连不上。
+// 后端地址：由后端自己托管的页面（/classic/，端口可能是 8000、8010 等）走同源；
+// 部署在域名下（80/443）也走同源，nginx 反代 /api 和 /ws；
+// 只有本地静态服务器（8080/5500 等）打开时才连 127.0.0.1:8000。
+// 写死成 127.0.0.1 的话，上线后浏览器会去连访客自己的本机，必然连不上；
+// 端口不是 80/443 时写死还会让页面连到另一个后端实例，房间号对不上。
 const BE = (() => {
   const p = location.port;
   if (location.pathname.startsWith('/classic/') || location.pathname.startsWith('/personal/') || !p || p === '80' || p === '443') {
@@ -116,8 +163,8 @@ I.play = svg('<path d="m8 5 11 7-11 7V5Z"/>');
 I.bulb = svg('<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-4 10.5c.8.7 1 1.6 1 2.5h6c0-.9.2-1.8 1-2.5A6 6 0 0 0 12 3Z"/>');
 I.timer = svg('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/>');
 
-function corgiBrand() {
-  return '<a class="brand" href="#/">' + I.dog + '<span>corgi</span></a>';
+function tianjingBrand() {
+  return '<a class="brand" href="#/"><img class="brand-mark" src="images/tianjing-logo.png" alt="天镜"><span>天镜</span><span class="brand-latin">SkyLens</span></a>';
 }
 
 function navHtml(active) {
@@ -129,9 +176,9 @@ function navHtml(active) {
     ['/personal/', '面试者', active === 'candidate'],
     ['#/interviewer', '面试官', active === 'interviewer'],
     ['#/interviewer/analysis', '面试者分析', active === 'analysis'],
-    ['screening.html', '简历初筛', false]
+    ['screening.html', '招聘', false]
   ];
-  return '<div class="nav"><div class="wrap nav-in">' + corgiBrand() +
+  return '<div class="nav"><div class="wrap nav-in">' + tianjingBrand() +
     '<nav class="nav-links">' + links.map(l => '<a class="' + (l[2] ? 'active' : '') + '" href="' + l[0] + '">' + l[1] + '</a>').join('') + '</nav>' +
     '<div class="nav-right">' + right + '</div></div></div>';
 }
@@ -202,6 +249,9 @@ function reportData(id, role) {
 const routes = {};
 function render() {
   clearTimers();
+  clearRotateHint();
+  exitLandscape();
+  document.body.classList.remove('room-wide');
   const segs = (location.hash || '#/').replace(/^#\/?/, '').split('/').filter(Boolean);
   // 旧版候选人/模拟路由不再承担正式面试；统一进入独立候选人端。
   if (segs[0] === 'candidate') {
@@ -660,22 +710,75 @@ const CANDIDATE_LINES = [
 ];
 const KIND_TITLE = { probe: '⚠ 追问', upgrade: '↑ 加难度', wrap: '○ 收一下' };
 
+/* ---------- 面试间横屏：布局交给 CSS，这里负责提示与「尽力锁定」 ---------- */
+function clearRotateHint() { const el = $('#rotateHint'); if (el) el.remove(); }
+function exitLandscape() {
+  try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (_) {}
+  try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (_) {}
+}
+async function requestLandscape() {
+  try {
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+      await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+    }
+  } catch (_) { /* 全屏被拒也继续试锁定 */ }
+  try {
+    if (screen.orientation && screen.orientation.lock) {
+      await screen.orientation.lock('landscape');
+      return true;
+    }
+  } catch (_) { /* iOS Safari 没有 lock；Android 非全屏也会失败 */ }
+  return false;
+}
+function showRotateHint() {
+  if (!isMobile() || document.getElementById('rotateHint')) return;
+  if (sessionStorage.getItem('ttc_rotate_skip') === '1') return;
+  const hint = document.createElement('div');
+  hint.className = 'rotate-hint';
+  hint.id = 'rotateHint';
+  hint.innerHTML = '<div class="rotate-card"><div class="rotate-icon"></div>'
+    + '<b>把手机横过来</b>'
+    + '<p>面试间按横屏设计：横过来能同时看清候选人画面、纪要和追问提示。旋转后本提示自动消失。</p>'
+    + '<div class="rotate-actions"><button class="btn btn-primary" id="rotateFull" type="button">横屏全屏使用</button>'
+    + '<button class="btn btn-quiet" id="rotateSkip" type="button">继续竖屏</button></div>'
+    + '<p class="rotate-tip" id="rotateTip"></p></div>';
+  document.body.appendChild(hint);
+  $('#rotateSkip').onclick = () => {
+    sessionStorage.setItem('ttc_rotate_skip', '1');
+    hint.remove();
+  };
+  $('#rotateFull').onclick = async () => {
+    const ok = await requestLandscape();
+    if (!ok) { const tip = $('#rotateTip'); if (tip) tip.textContent = '这个浏览器不支持自动横屏，请手动把手机转过来。'; }
+  };
+}
+
 routes['/interviewer/room/:id'] = {
   key: 'interviewerRoom',
   render(p) {
     const linked = Boolean(hrRoomTicket(p.id));
     const joinUrl = location.origin + '/personal/?room=' + encodeURIComponent(p.id);
     return navHtml('interviewer') +
-      '<main class="wrap page fade-in">' +
-      '<div class="row-between"><div><h1 style="font-size:28px;">面试中</h1>' +
-      '<p class="panel-sub mt-8">房间 ' + esc(p.id) + ' · <span id="timer">00:00</span></p>' +
-      (linked ? '<p class="tiny muted mt-8">这场面试已绑定申请。请让候选人从“我的申请”进入初面房间。</p>' : '<p class="tiny muted mt-8">候选人入口：<code>' + esc(joinUrl) + '</code> <button class="btn btn-ghost btn-sm" id="copyLinkBtn">' + I.copy + ' 复制链接</button></p>') + '</div>' +
-      '<div class="row"><span class="chip peach" id="adoptChip">采纳 0</span><span class="chip gray" id="ignoreChip">忽略 0</span>' +
-      '<button class="btn btn-danger" id="endIntBtn">' + I.phone + ' 结束面试</button></div></div>' +
-      '<div class="grid-2 mt-16" style="align-items:start;">' +
-      '<div class="stack">' +
-      '<div class="stage" id="intStage"><div class="vid-fill"><div><div class="avatar">李</div><div class="place-name">候选人 · 李想</div></div></div>' +
-      '<div class="status-float"><span class="pulse"></span><span id="intStatus">等待候选人进入…</span></div></div>' +
+      '<main class="wrap page page-wide fade-in">' +
+      '<div class="row-between room-head"><div><h1 class="room-title">面试中</h1>' +
+      '<p class="panel-sub mt-8 room-sub">房间 ' + esc(p.id) + ' · <span id="timer">00:00</span></p>' +
+      (linked
+        ? '<p class="tiny muted mt-8 join-line">这场面试已绑定申请。请让候选人从“我的申请”进入初面房间。</p>'
+        : '<p class="tiny muted mt-8 join-line">' + (isMobile() ? '' : '<span class="join-label">候选人入口：</span><code>' + esc(joinUrl) + '</code> ') + '<button class="btn btn-ghost btn-sm" id="copyLinkBtn">' + I.copy + ' 复制链接</button></p>') + '</div>' +
+      '<div class="row">' +
+      '<button class="btn btn-danger btn-sm" id="endIntBtn">' + I.phone + ' 结束面试</button></div></div>' +
+      '<div class="interview-shell mt-16">' +
+      '<div class="interview-main">' +
+      '<div class="stage stage-xl" id="intStage">' +
+      '<video id="peerVideoRtc" class="peer-video" autoplay playsinline muted aria-label="候选人实时画面（点对点直连）"></video>' +
+      '<img id="peerVideo" class="peer-video" alt="候选人实时画面">' +
+      '<div class="vid-fill" id="stagePlaceholder"><div><div class="avatar">李</div><div class="place-name">候选人 · 李想</div><p class="stage-hint">候选人开启摄像头后，画面会出现在这里</p></div></div>' +
+      '<div class="status-float"><span class="pulse"></span><span id="intStatus">等待候选人进入…</span></div>' +
+      '<div class="stage-chip" id="stageChip">画面未开启</div>' +
+      '</div>' +
+      '<p class="tiny muted">隐私提示：本场信号与提示卡仅同步给当场面官本人，不写入候选人可见画面。</p>' +
+      '</div>' +
+      '<aside class="interview-side">' +
       '<div class="minutes" id="minutesCard">' +
       '<div class="minutes-head"><b>面试纪要</b><span class="tiny muted" id="sttState">麦克风未开启</span>' +
       '<button class="btn btn-sm btn-ghost" id="sttBtn">开启语音转写</button></div>' +
@@ -684,28 +787,27 @@ routes['/interviewer/room/:id'] = {
       '<input id="trInput" placeholder="手打一句，回车发送" style="flex:1;padding:8px 11px;border:1px solid var(--line);border-radius:9px;font:inherit;" />' +
       '<button class="btn btn-sm btn-primary" id="trSend">发送</button></div>' +
       '</div>' +
-      '<p class="tiny muted">隐私提示：本场信号与提示卡仅同步给当场面官本人，不写入候选人可见画面。</p>' +
-      '</div>' +
-      '<div class="stack">' +
       '<div class="signal-band" id="signalBand"><div class="signal-head"><b>候选人情信号（实时）</b><span class="tiny muted">无数字 · 仅面官可见</span><span class="tiny muted" id="bandNote" style="margin-left:auto;">连接中…</span></div>' +
       '<div class="signal-lanes">' +
       lane('语速', 'l1', '40') + lane('停顿', 'l2', '45') + lane('表情', 'l3', '35') + lane('眼神', 'l4', '30') +
       '</div></div>' +
       '<div class="cue-wrap" id="cueWrap"></div>' +
-      '</div></div>' +
+      '</aside></div>' +
       '</main>' + footerHtml();
   },
   mount(p) {
-    const state = { code: p.id, ticket: hrRoomTicket(p.id), linked: Boolean(hrRoomTicket(p.id)), sec: 0, capi: 0, adopt: 0, ignore: 0, cues: [], ws: null, ended: false, hasSignal: false };
+    const state = { code: p.id, ticket: hrRoomTicket(p.id), linked: Boolean(hrRoomTicket(p.id)), sec: 0, capi: 0, adopt: 0, ignore: 0, cues: [], ws: null, ended: false, hasSignal: false, pc: null, pcPending: [], rtcLive: false, rtcTimer: null };
+    document.body.classList.add('room-wide');
     window.__corgiJob = '前端工程师';
     every(() => { state.sec++; $('#timer').textContent = fmtTs(state.sec); }, 1000);
     every(() => { if (!state.hasSignal) demoTaint(); }, 2600);
     connectInterviewer(state);
     setupMinutes(state);
+    every(() => refreshStageChip(state), 1500);
+    every(() => rtcStatsTick(state), 8000);
     if ($('#copyLinkBtn')) $('#copyLinkBtn').addEventListener('click', () => {
       const url = location.origin + '/personal/?room=' + encodeURIComponent(state.code);
-      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(() => toast('链接已复制'), () => toast('复制失败'));
-      else toast('复制失败：浏览器不支持');
+      copyText(url, '链接已复制');
     });
     $('#endIntBtn').addEventListener('click', () => {
       state.ended = true;
@@ -729,6 +831,7 @@ routes['/interviewer/room/:id'] = {
         }).catch(fallbackReport);
       }
     });
+    showRotateHint();
     const sw = $('#switchRole'); if (sw) sw.addEventListener('click', () => { LS.del('corgi_role'); location.hash = '#/'; render(); });
   }
 };
@@ -757,13 +860,213 @@ function paintSignal(m) {
 function connectInterviewer(state) {
   const ws = new WebSocket(BE.ws + '/ws/room/' + encodeURIComponent(state.code) + '?role=interviewer' + hrTicketQuery(state.code));
   state.ws = ws;
-  ws.onopen = () => { const n = $('#bandNote'); if (n) n.textContent = '已连接后端'; };
+  ws.onopen = () => {
+    const n = $('#bandNote'); if (n) n.textContent = '已连接后端';
+    // 告诉候选人「我在这，可以发点对点 offer 了」
+    ws.send(JSON.stringify({ type: 'rtc', sub: 'ready' }));
+  };
   ws.onmessage = ev => {
     let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
     handleIntMsg(state, m);
   };
-  ws.onclose = () => { if (!state.ended) { const n = $('#bandNote'); if (n) n.textContent = state.linked ? '连接已断开 · 请刷新后核对面试状态' : '后端离线 · 本地演示模式'; const st = $('#intStatus'); if (st && !state.hasSignal) st.textContent = state.linked ? '未能连接已邀请的面试房间' : '等待候选人进入…'; } };
+  ws.onclose = () => {
+    rtcReset(state);
+    if (!state.ended) { const n = $('#bandNote'); if (n) n.textContent = state.linked ? '连接已断开 · 请刷新后核对面试状态' : '后端离线 · 本地演示模式'; const st = $('#intStatus'); if (st && !state.hasSignal) st.textContent = state.linked ? '未能连接已邀请的面试房间' : '等待候选人进入…'; }
+  };
   every(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'ping', t: state.sec })); }, 15000);
+}
+/* ---------------- 点对点画面（WebRTC） ----------------
+   候选人推流、面试官收流，媒体直连不过服务器；服务器只转信令。
+   建不起来就继续用原来的 JPEG 逐帧通道，界面会标明当前是哪一种，
+   不会让人把每两秒一帧误当成实时视频。 */
+const RTC_ICE_SERVERS = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  { urls: ['stun:stun.cloudflare.com:3478'] },
+  // 国内可达的 STUN：Google 在国内基本不通
+  { urls: ['stun:stun.qq.com:3478'] },
+  { urls: ['stun:stun.chat.bilibili.com:3478'] },
+];
+
+let rtcCands = { host: 0, srflx: 0, relay: 0, other: 0 };
+let lastStats = null;
+
+/* 每 8 秒回传一次收流统计：帧率、码率、丢包、抖动、RTT、走的哪条候选 */
+function rtcStatsTick(state) {
+  const pc = state.pc;
+  if (!pc || pc.connectionState !== 'connected') return;
+  if (!state.ws || state.ws.readyState !== 1) return;
+  pc.getStats(null).then((report) => {
+    const byId = {};
+    const info = { pair: null, vid: null };
+    let selectedId = null;
+    report.forEach((s) => { byId[s.id] = s; });
+    report.forEach((s) => {
+      if (s.type === 'transport' && s.selectedCandidatePairId) selectedId = s.selectedCandidatePairId;
+    });
+    report.forEach((s) => {
+      if (s.type === 'candidate-pair' && s.id === selectedId) {
+        const local = byId[s.localCandidateId] || {};
+        const remote = byId[s.remoteCandidateId] || {};
+        info.pair = {
+          lt: local.candidateType || '?', rt: remote.candidateType || '?',
+          proto: local.protocol || '?',
+          rtt: s.currentRoundTripTime ? Math.round(s.currentRoundTripTime * 1000) : null,
+        };
+      }
+      if (s.type === 'inbound-rtp' && (s.kind === 'video' || s.mediaType === 'video')) {
+        const prev = lastStats;
+        const now = s.timestamp || Date.now();
+        const kbps = (prev && now > prev.ts)
+          ? Math.round((s.bytesReceived - prev.bytes) * 8 / (now - prev.ts)) : null;
+        lastStats = { bytes: s.bytesReceived, ts: now };
+        info.vid = {
+          fps: s.framesPerSecond, w: s.frameWidth, h: s.frameHeight,
+          lost: s.packetsLost, jitter: s.jitter ? Math.round(s.jitter * 1000) : null,
+          kbps: kbps,
+        };
+      }
+    });
+    try { state.ws.send(JSON.stringify({ type: 'diag', ev: 'stats', data: info })); } catch (_) {}
+  }).catch(() => {});
+}
+
+/* 把连接诊断回传给服务端日志，卡在哪一步一眼能看出来 */
+function rtcDiag(state, ev) {
+  if (!state.ws || state.ws.readyState !== 1) return;
+  const pc = state.pc;
+  try {
+    state.ws.send(JSON.stringify({ type: 'diag', ev: ev, data: {
+      ua: (navigator.userAgent || '').slice(0, 120),
+      conn: pc ? pc.connectionState : 'none',
+      ice: pc ? pc.iceConnectionState : 'none',
+      gather: pc ? pc.iceGatheringState : 'none',
+      cands: rtcCands,
+      live: state.rtcLive,
+    } }));
+  } catch (_) { /* 诊断失败不能影响面试 */ }
+}
+
+function rtcReset(state) {
+  const pc = state.pc;
+  state.pc = null;
+  state.pcPending = [];
+  state.rtcLive = false;
+  rtcCands = { host: 0, srflx: 0, relay: 0, other: 0 };
+  if (state.rtcTimer) clearTimeout(state.rtcTimer);
+  state.rtcTimer = null;
+  if (pc) { try { pc.close(); } catch (_) { /* 已经关了 */ } }
+  const video = $('#peerVideoRtc');
+  if (video) { try { video.srcObject = null; } catch (_) { /* 已清空 */ } video.classList.remove('on'); }
+}
+
+function rtcEnsure(state) {
+  if (state.pc) return state.pc;
+  if (typeof RTCPeerConnection === 'undefined') return null;
+  const pc = new RTCPeerConnection({ iceServers: RTC_ICE_SERVERS, bundlePolicy: 'max-bundle' });
+  state.pc = pc;
+  state.pcPending = [];
+  pc.onicecandidate = (event) => {
+    const candidate = event.candidate;
+    if (!candidate || !state.ws || state.ws.readyState !== 1) return;
+    const kind = candidate.type || 'other';
+    rtcCands[kind] = (rtcCands[kind] || 0) + 1;
+    state.ws.send(JSON.stringify({ type: 'rtc', sub: 'ice', candidate: {
+      candidate: candidate.candidate,
+      sdpMid: candidate.sdpMid,
+      sdpMLineIndex: candidate.sdpMLineIndex,
+    } }));
+  };
+  pc.ontrack = (event) => {
+    const video = $('#peerVideoRtc');
+    if (!video) return;
+    video.srcObject = event.streams[0] || new MediaStream([event.track]);
+    const playing = video.play();
+    if (playing && playing.catch) playing.catch(() => { /* 等用户手势 */ });
+    // 这里**不能**把画面标成"直连"：ontrack 只说明收到了轨道，
+    // DTLS 握手没完成之前一帧都不会有。早标的结果是盖住逐帧通道、
+    // 又显示一张不动的冻结图 —— 看起来比逐帧还卡。
+  };
+  pc.onconnectionstatechange = () => {
+    if (state.pc !== pc) return;
+    if (pc.connectionState === 'connected') {
+      state.rtcLive = true;
+      const video = $('#peerVideoRtc');
+      if (video) video.classList.add('on');
+      const placeholder = $('#stagePlaceholder');
+      if (placeholder) placeholder.style.display = 'none';
+      const chip = $('#stageChip');
+      if (chip) chip.textContent = '候选人画面 · 点对点直连';
+      state.lastFrameAt = Date.now();
+      rtcDiag(state, 'connected');
+    } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      rtcReset(state);
+      const chip = $('#stageChip');
+      if (chip) chip.textContent = '点对点未建立 · 逐帧画面';
+      rtcDiag(state, 'failed');
+    }
+  };
+  return pc;
+}
+
+async function rtcOnMessage(state, m) {
+  if (m.sub === 'offer' && m.sdp) {
+    // 候选人重开摄像头会重新发 offer，旧连接还停在 negotiate 状态就先拆掉
+    if (state.pc && state.pc.signalingState !== 'stable') rtcReset(state);
+    const pc = rtcEnsure(state);
+    if (!pc) return;
+    rtcDiag(state, 'offer');
+    try {
+      await pc.setRemoteDescription(m.sdp);
+      for (const queued of state.pcPending.splice(0)) {
+        try { await pc.addIceCandidate(queued); } catch (_) { /* 过期候选 */ }
+      }
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      if (state.ws && state.ws.readyState === 1) {
+        state.ws.send(JSON.stringify({ type: 'rtc', sub: 'answer',
+                                       sdp: { type: 'answer', sdp: pc.localDescription.sdp } }));
+      }
+      // 12 秒没连上就让角标说清楚，避免把逐帧画面当成"实时视频"
+      if (state.rtcTimer) clearTimeout(state.rtcTimer);
+      state.rtcTimer = setTimeout(() => {
+        if (state.rtcLive) return;
+        const chip = $('#stageChip');
+        if (chip) chip.textContent = '点对点未建立 · 逐帧画面';
+        rtcDiag(state, 'timeout');
+      }, 12000);
+    } catch (_) { rtcReset(state); }
+    return;
+  }
+  if (m.sub === 'ice' && m.candidate) {
+    const pc = state.pc;
+    if (!pc || !pc.remoteDescription) { state.pcPending.push(m.candidate); return; }
+    try { await pc.addIceCandidate(m.candidate); } catch (_) { /* 过期候选 */ }
+    return;
+  }
+  if (m.sub === 'bye') { rtcReset(state); }
+}
+
+function applyPeerFrame(state, m) {
+  if (state.rtcLive) return;   // 直连画面优先，逐帧只在没打通时露脸
+  const el = $('#peerVideo'); if (!el || !m.img) return;
+  el.src = m.img;
+  el.classList.add('on');
+  const ph = $('#stagePlaceholder'); if (ph) ph.style.display = 'none';
+  const chip = $('#stageChip'); if (chip) chip.textContent = '候选人画面 · 实时';
+  state.lastFrameAt = Date.now();
+}
+function resetPeerStage(state) {
+  state.lastFrameAt = 0;
+  rtcReset(state);
+  const el = $('#peerVideo'); if (el) { el.classList.remove('on'); el.removeAttribute('src'); }
+  const ph = $('#stagePlaceholder'); if (ph) ph.style.display = '';
+  const chip = $('#stageChip'); if (chip) chip.textContent = '画面未开启';
+}
+function refreshStageChip(state) {
+  const chip = $('#stageChip'); if (!chip) return;
+  if (state.rtcLive) { chip.textContent = '候选人画面 · 点对点直连'; return; }
+  if (!state.lastFrameAt) { chip.textContent = '画面未开启'; return; }
+  if (Date.now() - state.lastFrameAt > 4000) chip.textContent = '画面已暂停';
 }
 function handleIntMsg(state, m) {
   if (!m || !m.type) return;
@@ -793,6 +1096,13 @@ function handleIntMsg(state, m) {
   else if (m.type === 'peer') {
     const st = $('#intStatus');
     if (m.role === 'candidate') st.textContent = m.state === 'online' ? '候选人已进入' : '等待候选人进入…';
+    if (m.role === 'candidate' && m.state !== 'online') resetPeerStage(state);
+  }
+  else if (m.type === 'peer_frame') {
+    applyPeerFrame(state, m);
+  }
+  else if (m.type === 'rtc') {
+    rtcOnMessage(state, m);
   }
   else if (m.type === 'signal') {
     state.hasSignal = true;
@@ -846,8 +1156,8 @@ function pushCue(state, h) {
   later(() => { c.dim = true; renderCues(state); }, 3000);
 }
 function syncChips(state) {
-  $('#adoptChip').textContent = '采纳 ' + state.adopt;
-  $('#ignoreChip').textContent = '忽略 ' + state.ignore;
+  const adopt = $('#adoptChip'); if (adopt) adopt.textContent = '采纳 ' + state.adopt;
+  const ignore = $('#ignoreChip'); if (ignore) ignore.textContent = '忽略 ' + state.ignore;
 }
 function renderCues(state) {
   const wrap = $('#cueWrap'); if (!wrap) return;
@@ -1233,7 +1543,7 @@ function page404() {
   return navHtml('404') + '<main class="wrap page page-narrow"><div class="empty">' + I.x + '<div class="big">页面不存在</div><div><a href="#/">回到首页</a></div></div></main>' + footerHtml();
 }
 function footerHtml() {
-  return '<footer class="footer"><div class="wrap row-between"><div>corgi 面试前端 · 学习 corgi.insure 视觉风格的作品。</div>' +
+  return '<footer class="footer"><div class="wrap row-between">' +
     '<div>示例人物为演示；真实房间数据以服务端为准。</div></div></footer>';
 }
 window.addEventListener('hashchange', render);

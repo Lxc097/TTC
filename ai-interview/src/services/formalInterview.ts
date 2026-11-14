@@ -78,3 +78,29 @@ export async function completeFormalInterview(context: FormalContext): Promise<v
     { attemptId: context.attemptId })
   if (data.status !== 'completed') throw new Error('服务端尚未确认本次初面完成。')
 }
+
+export async function transcribeFormalAudio(context: FormalContext, blob: Blob): Promise<string> {
+  if (!blob.size) throw new Error('没有录到语音，请重试或使用文字输入。')
+  if (blob.size > 20 * 1024 * 1024) throw new Error('录音超过 20 MB，请缩短回答或使用文字输入。')
+  const query = new URLSearchParams({ applicationId: context.applicationId, attemptId: context.attemptId })
+  const response = await fetch('/api/candidate/formal-interview/transcribe?' + query, {
+    method: 'POST', cache: 'no-store',
+    headers: { 'Content-Type': blob.type || 'audio/webm', Authorization: 'Bearer ' + candidateToken() },
+    body: blob,
+  })
+  if (!response.ok) {
+    let detail = ''
+    try {
+      const data = await response.json() as { detail?: unknown; error?: unknown }
+      const value = typeof data.detail === 'string' ? data.detail : data.error
+      if (typeof value === 'string') detail = value.slice(0, 160)
+    } catch { /* Keep the fallback below. */ }
+    throw new Error(detail || (response.status === 401 ? '登录已失效，请重新登录。' : '语音转写暂不可用，请重试或使用文字输入。'))
+  }
+  const data: unknown = await response.json()
+  if (!data || typeof data !== 'object' || Array.isArray(data)
+    || typeof (data as { text?: unknown }).text !== 'string') throw new Error('语音转写返回无效数据。')
+  const text = (data as { text: string }).text.trim()
+  if (!text) throw new Error('没有识别到有效语音，请重试或使用文字输入。')
+  return text
+}

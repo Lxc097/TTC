@@ -9,14 +9,14 @@ import { InterviewHeader } from '../components/interview/room/InterviewHeader'
 import { InterviewSidebar } from '../components/interview/room/InterviewSidebar'
 import { useInterviewAudio } from '../hooks/useInterviewAudio'
 import { INITIAL_INTERVIEW_FLOW, interviewFlowReducer, type InterviewFlowAction } from '../hooks/interviewFlow'
-import { closeInterviewService, requestFollowUp, startInterviewService, summarizeAnswer, type InterviewServiceSession } from '../services/interviewClient'
+import { closeInterviewService, requestFollowUp, startInterviewService, summarizeAnswer, transcribePracticeAudio, type InterviewServiceSession } from '../services/interviewClient'
 import type { BiometricReading, BiometricsMode } from '../services/biometrics'
 import { DEFAULT_INTERVIEW_CONFIG, type BiometricSample, type InterviewAnswer, type InterviewConfig, type InterviewQuestion, type InterviewRecord, type QuestionReaction } from '../types/interview'
 import { describeQuestionReaction } from '../utils/answerInsight'
 import { shouldStartAutoSubmit } from '../utils/autoSubmit'
 import { generateInterviewReport } from '../utils/report'
 import { saveInterviewRecord } from '../utils/storage'
-import { completeFormalInterview, getFormalContext, saveFormalAnswer } from '../services/formalInterview'
+import { completeFormalInterview, getFormalContext, saveFormalAnswer, transcribeFormalAudio } from '../services/formalInterview'
 import '../components/interview/room/room.css'
 
 interface DeviceChoices { cameraEnabled: boolean; microphoneEnabled: boolean; consent: boolean; cameraDeviceId: string }
@@ -75,6 +75,7 @@ export function InterviewSession() {
   const completionPendingRef = useRef(false)
   const completionBlockedRef = useRef(false)
   const submittedRoundRef = useRef('')
+  const submitPendingRef = useRef(false)
   const speechRunRef = useRef(0)
   const firstVoiceAt = useRef<number | null>(null)
   const lastVoiceAt = useRef<number | null>(null)
@@ -103,6 +104,7 @@ export function InterviewSession() {
   }, [cancelCountdown])
 
   const audio = useInterviewAudio({
+    transcribeAudio: blob => formal ? transcribeFormalAudio(formal, blob) : transcribePracticeAudio(blob),
     onTranscript: (text, isFinal) => {
       if (flowRef.current.phase === 'completed') return
       if (isFinal) {
@@ -159,7 +161,7 @@ export function InterviewSession() {
     if (finishedRef.current || !ready) return
     dispatchFlow({ type: 'LISTEN_STARTED' })
     if (speechSupported) startRecognition()
-    else setNotice('当前浏览器不支持语音转写，可用文字回答；麦克风波形仍来自真实输入。')
+    else setNotice('当前浏览器不支持录音转写，可用文字回答；麦克风波形仍来自真实输入。')
   }, [deviceChoices.microphoneEnabled, dispatchFlow, speechSupported, startMicrophone, startRecognition])
 
   const playQuestion = useCallback((force = false) => {
@@ -247,8 +249,10 @@ export function InterviewSession() {
     return () => clearInterval(timer)
   }, [config.durationMinutes, finish])
 
-  function commitAnswer(skip = false) {
-    if (finishedRef.current || flowRef.current.phase === 'thinking') return
+  async function commitAnswer(skip = false) {
+    if (submitPendingRef.current || finishedRef.current || flowRef.current.phase === 'thinking') return
+    submitPendingRef.current = true
+    try {
     const state = flowRef.current
     const question = questions[state.index]
     if (!question) return
@@ -258,12 +262,19 @@ export function InterviewSession() {
     }
     const key = String(state.index) + ':' + String(state.followUpCount)
     if (submittedRoundRef.current === key) return
+    if (skip) void stopRecognition()
+    else {
+      if (isRecognizing) setInterim('转写中…')
+      await stopRecognition(true)
+      setInterim('')
+      if (finishedRef.current || flowRef.current.index !== state.index
+        || flowRef.current.followUpCount !== state.followUpCount) return
+    }
     const text = skip ? '' : draftRef.current.trim()
     if (!skip && !text) { setTextOpen(true); return }
     submittedRoundRef.current = key
     speechRunRef.current += 1
     stopSpeech()
-    stopRecognition()
     stopMicrophone()
     resetVoiceTiming()
     setInterim('')
@@ -320,6 +331,7 @@ export function InterviewSession() {
         if (state.index + 1 >= questions.length) void finish(answersRef.current)
         else { questionStartedAt.current = new Date().toISOString(); dispatchFlow({ type: 'NEXT_QUESTION' }) }
       })
+    } finally { submitPendingRef.current = false }
   }
   submitRef.current = commitAnswer
 
@@ -342,9 +354,11 @@ export function InterviewSession() {
     return () => clearInterval(interval)
   }, [autoSubmit, cancelCountdown])
 
-  const toggleMicrophone = () => {
+  const toggleMicrophone = async () => {
     if (micStatus === 'ready') {
-      stopRecognition(); stopMicrophone(); setInterim(''); resetVoiceTiming(); dispatchFlow({ type: 'LISTEN_ENDED' })
+      if (isRecognizing) setInterim('转写中…')
+      await stopRecognition(true)
+      stopMicrophone(); setInterim(''); resetVoiceTiming(); dispatchFlow({ type: 'LISTEN_ENDED' })
     } else if (flowRef.current.phase === 'speaking') {
       setNotice('问题朗读结束后会自动收音。')
     } else {
@@ -352,7 +366,7 @@ export function InterviewSession() {
         if (!ready || finishedRef.current) return
         dispatchFlow({ type: 'LISTEN_STARTED' })
         if (speechSupported) startRecognition()
-        else setNotice('浏览器不支持语音转写，请在文字输入框中回答。')
+        else setNotice('浏览器不支持录音转写，请在文字输入框中回答。')
       })
     }
   }

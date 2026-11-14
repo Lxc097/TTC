@@ -223,7 +223,19 @@ async def room_ws(ws: WebSocket, code: str,
                 pass
             hub.remove("candidate", old)
     else:
+        # 同一个房间同一个角色只保留最新一条连接。
+        # 面试官刷新或开了两个标签页时，旧连接不清掉，WebRTC 信令会被
+        # 同时投给两个页面，两边各回一个 answer：候选人接受了第一个，
+        # ICE 却可能选中第二条连接的候选，于是 ICE 通了、DTLS 永远握不上手。
+        # 这个症状在日志里就是 conn=connecting + ice=connected 长期不动。
+        previous = tuple(hub.conns.get(role, ()))
         hub.add(role, ws)
+        for old in previous:
+            try:
+                await old.close(code=4008)
+            except Exception:
+                pass
+            hub.remove(role, old)
 
     if role == "candidate":
         # 候选人进来才算真正开始，并且带上他的授权状态
