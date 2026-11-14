@@ -1,0 +1,147 @@
+/* TTC 企业端招聘工作台：新组件样式。
+ *
+ * 复用 styles.css 的设计变量与 screening.css 的基础类；
+ * 这里只补工作台特有的：二级页签、卡片翻页、指标条、结果表格、弹窗与轻提示。
+ */
+
+/* ---------- 二级页签 ---------- */
+.ws-subnav { display: flex; gap: 6px; margin: 0 0 22px; border-bottom: 1px solid var(--line); }
+.ws-subnav a { padding: 10px 14px; color: var(--ink-2); font-size: 14px; font-weight: 600; border-bottom: 2px solid transparent; }
+.ws-subnav a:hover { color: var(--ink); }
+.ws-subnav a.active { color: var(--orange-strong); border-color: var(--orange); }
+
+/* ---------- 工具栏 / 视图切换 ---------- */
+.ws-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 4px 0 16px; }
+.ws-seg { display: inline-flex; background: var(--gray-1); border-radius: var(--r-pill); padding: 4px; gap: 4px; }
+.ws-seg button { border: 0; background: transparent; border-radius: var(--r-pill); padding: 8px 16px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.ws-seg button.on { background: var(--paper); color: var(--ink); box-shadow: 0 1px 4px rgba(0, 0, 0, .12); }
+
+/* ---------- 统计条 ---------- */
+.ws-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 0 0 20px; }
+.ws-stats-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ws-stats-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.ws-stats-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.ws-stat { padding: 16px 18px; display: flex; flex-direction: column; gap: 2px; }
+.ws-stat span { color: var(--ink-2); font-size: 12px; }
+.ws-stat strong { font: 700 26px/1.2 var(--font-serif); }
+.ws-stat small { color: var(--ink-3); font-size: 11px; }
+.ws-stat strong.ws-stat-text { font-family: var(--font-sans); font-size: 15px; line-height: 1.4; }
+
+.ws-board { min-height: 240px; }
+
+/* ---------- 卡片翻页 ---------- */
+.ws-card-wrap { display: flex; justify-content: center; }
+.ws-card { width: min(100%, 900px); background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-xl); box-shadow: var(--shadow-card); padding: 26px; }
+.ws-card-head { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; border-bottom: 1px solid var(--line); padding-bottom: 18px; }
+.ws-card-head h2 { font-size: 28px; margin: 6px 0 4px; }
+.ws-card-head p { color: var(--ink-3); font-size: 13px; }
+.ws-card-score { text-align: right; display: flex; flex-direction: column; gap: 5px; align-items: flex-end; }
+.ws-card-score span { font-size: 11px; color: var(--ink-3); }
+.ws-card-score strong { font-size: 15px; }
+.ws-card-score small { color: var(--ink-3); font-size: 11px; }
+.ws-card-body { padding: 20px 0 8px; }
+.ws-resume-blocks { display: grid; gap: 16px; }
+.ws-resume-block h3 { font-size: 12px; font-family: var(--font-sans); color: var(--ink-3); letter-spacing: .06em; margin-bottom: 8px; text-transform: uppercase; }
+.ws-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.ws-list { margin: 0; padding-left: 18px; color: var(--ink-2); font-size: 13px; line-height: 1.7; }
+.ws-list li + li { margin-top: 4px; }
+.ws-empty-copy { color: var(--ink-3); font-size: 13px; line-height: 1.7; }
+.ws-card-actions { display: flex; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--line); padding-top: 18px; }
+.ws-card-nav { display: flex; align-items: center; justify-content: space-between; margin-top: 16px; color: var(--ink-3); font-size: 13px; }
+.ws-inline-note { margin-top: 14px; padding: 10px 12px; border-left: 3px solid var(--orange); background: #fff7f1; border-radius: 0 8px 8px 0; font-size: 13px; color: #78563b; }
+
+/* ---------- 列表 ---------- */
+.ws-table { min-width: 940px; }
+.ws-row { cursor: pointer; }
+.ws-row.expanded { background: #fffaf6; }
+.ws-row-actions { display: flex; gap: 8px; align-items: center; }
+.ws-expand-row td { background: #fffaf6; padding: 0; }
+.ws-expand { padding: 18px 16px 22px; display: grid; gap: 14px; }
+.ws-expand-summary h3 { font-size: 12px; font-family: var(--font-sans); color: var(--ink-3); letter-spacing: .06em; margin-bottom: 6px; text-transform: uppercase; }
+.ws-expand-summary p { font-size: 13px; color: var(--ink-2); line-height: 1.7; }
+
+/* ---------- 初筛标准 ---------- */
+.ws-criteria { padding: 26px; max-width: 900px; }
+.ws-criteria-head { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 8px; }
+.ws-criteria-head h2 { font-size: 22px; margin-bottom: 6px; }
+.ws-field { display: grid; gap: 6px; margin-top: 14px; }
+.ws-field > span { font-size: 12px; font-weight: 700; color: var(--ink-2); }
+.ws-field textarea { resize: vertical; line-height: 1.7; }
+.ws-field-inline { margin: 0; min-width: 150px; }
+.ws-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; margin: 14px 0; }
+.ws-field-wide { grid-column: 1 / -1; }
+.ws-meta { color: var(--ink-3); font-size: 12px; margin-top: 10px; }
+.ws-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; }
+.ws-hint { color: var(--ink-3); font-size: 12px; }
+
+/* ---------- 筛选 chips ---------- */
+.ws-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ws-chip { border: 1px solid var(--gray-2); background: var(--paper); color: var(--ink-2); border-radius: var(--r-pill); padding: 7px 14px; font-size: 13px; font-weight: 600; }
+.ws-chip:hover { border-color: var(--ink-3); }
+.ws-chip.on { border-color: var(--orange); background: var(--peach-bg); color: var(--orange-strong); }
+
+/* ---------- 指标条 ---------- */
+.ws-metric-row { display: grid; grid-template-columns: 110px 1fr 40px; align-items: center; gap: 12px; margin-top: 10px; font-size: 13px; color: var(--ink-2); }
+.ws-metric-bar { height: 8px; background: var(--gray-1); border-radius: var(--r-pill); overflow: hidden; }
+.ws-metric-bar i { display: block; height: 100%; border-radius: var(--r-pill); background: var(--gray-3); }
+.ws-metric-bar i.ok { background: var(--green); }
+.ws-metric-bar i.warn { background: var(--amber); }
+.ws-metric-bar i.muted { background: var(--gray-3); }
+.ws-metric-row strong { text-align: right; font-size: 13px; }
+
+/* ---------- 佐证卡片 ---------- */
+.ws-evidence { border: 1px solid var(--line); border-radius: var(--r-md); padding: 14px 16px; margin-top: 12px; }
+.ws-evidence header { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
+.ws-evidence small { color: var(--ink-3); font-size: 11px; }
+.ws-evidence blockquote { margin: 0 0 8px; padding: 10px 14px; background: #fffaf6; border-left: 3px solid var(--peach-2); border-radius: 0 8px 8px 0; color: var(--ink); font-size: 13px; line-height: 1.7; }
+.ws-evidence p { font-size: 13px; color: var(--ink-2); line-height: 1.7; }
+.ws-follow-up { margin-top: 6px; }
+.ws-two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+
+/* ---------- 排期 / 开关 ---------- */
+.ws-schedule summary { display: inline-flex; list-style: none; }
+.ws-schedule summary::-webkit-details-marker { display: none; }
+.ws-schedule[open] summary { margin-bottom: 8px; }
+.ws-switch { display: inline-flex; align-items: center; gap: 9px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.ws-switch input { width: 18px; height: 18px; accent-color: var(--orange-strong); }
+
+/* ---------- 弹窗 ---------- */
+.ws-modal { position: fixed; inset: 0; background: rgba(29, 29, 29, .42); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 60; }
+.ws-modal-box { width: min(100%, 720px); max-height: 86vh; overflow: auto; background: var(--paper); border-radius: var(--r-xl); box-shadow: var(--shadow-pop); }
+.ws-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 24px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--paper); z-index: 1; }
+.ws-modal-head h2 { font-size: 20px; }
+.ws-modal-close { border: 0; background: transparent; font-size: 24px; line-height: 1; color: var(--ink-3); padding: 0 4px; }
+.ws-modal-close:hover { color: var(--ink); }
+.ws-modal-body { padding: 22px 24px 26px; }
+.ws-modal-actions { margin-top: 20px; }
+.ws-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; }
+.ws-detail-grid > div { display: grid; gap: 3px; }
+.ws-label { font-size: 11px; color: var(--ink-3); }
+.ws-note { margin-top: 16px; padding: 12px 14px; background: #fffaf2; border: 1px solid #eddfc9; border-radius: 10px; font-size: 13px; color: #6b5843; line-height: 1.7; }
+
+/* ---------- 轻提示 ---------- */
+.ws-toast { position: fixed; left: 50%; bottom: 34px; transform: translate(-50%, 14px); background: var(--ink); color: #fff; padding: 11px 18px; border-radius: var(--r-pill); font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease; z-index: 80; max-width: min(92vw, 560px); }
+.ws-toast.show { opacity: 1; transform: translate(-50%, 0); }
+.ws-toast.error { background: #8f1f2e; }
+.ws-toast.ok { background: #14612f; }
+
+/* ---------- 空状态 ---------- */
+.ws-empty { text-align: center; padding: 56px 20px; background: var(--paper); border: 1px dashed var(--gray-2); border-radius: var(--r-xl); }
+.ws-empty h2 { font-size: 22px; margin-bottom: 8px; }
+.ws-empty p { color: var(--ink-3); font-size: 13px; margin-bottom: 16px; }
+
+@media (max-width: 900px) {
+  .ws-form-grid, .ws-two-col, .ws-detail-grid { grid-template-columns: 1fr; }
+  .ws-stats, .ws-stats-3, .ws-stats-4, .ws-stats-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ws-card-head { flex-direction: column; }
+  .ws-card-score { align-items: flex-start; text-align: left; }
+  .ws-criteria-head { flex-direction: column; }
+}
+
+@media (max-width: 560px) {
+  .ws-stats, .ws-stats-3, .ws-stats-4, .ws-stats-5 { grid-template-columns: 1fr; }
+  .ws-card { padding: 18px; }
+  .ws-modal { padding: 10px; }
+  .ws-modal-body { padding: 16px; }
+  .ws-subnav { overflow: auto; }
+}
