@@ -154,3 +154,25 @@
   .ws-modal-body { padding: 16px; }
   .ws-subnav { overflow: auto; }
 }
+
+/* ---------- AI 结果三栏卡 ---------- */
+.ai-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.ai-card { background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-card); padding: 20px; display: grid; gap: 12px; cursor: pointer; }
+.ai-card:hover { border-color: var(--gray-3); }
+.ai-card-head { display: flex; align-items: center; gap: 12px; }
+.ai-card-head .ws-avatar { width: 40px; height: 40px; font-size: 15px; }
+.ai-who { flex: 1; min-width: 0; }
+.ai-who strong { display: block; font-size: 15px; }
+.ai-who small { color: var(--ink-3); font-size: 12.5px; }
+.ai-card-summary { background: var(--gray-1); border-radius: var(--r-md); padding: 11px 13px; font-size: 13px; color: var(--ink-2); line-height: 1.6; }
+.ai-card-metrics { display: grid; gap: 8px; min-height: 62px; align-content: start; }
+.ai-metric { display: grid; grid-template-columns: 74px 1fr 30px; align-items: center; gap: 10px; font-size: 12.5px; color: var(--ink-2); }
+.ai-metric .bar { height: 6px; border-radius: var(--r-pill); background: var(--gray-1); overflow: hidden; }
+.ai-metric .bar i { display: block; height: 100%; border-radius: var(--r-pill); background: var(--orange); }
+.ai-metric .bar i.warn { background: var(--amber); }
+.ai-metric .bar i.muted { background: var(--gray-3); }
+.ai-metric b { text-align: right; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.ai-card-muted { color: var(--ink-3); font-size: 12.5px; line-height: 1.6; }
+.ai-card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 1100px) { .ai-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .ai-grid { grid-template-columns: 1fr; } }
