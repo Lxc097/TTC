@@ -51,8 +51,24 @@ def _load_dotenv(path: Path) -> None:
 
 # 测试/CI 里设 TTC_SKIP_DOTENV=1，避免开发者本地 .env 影响测试结果
 # （本地 .env 里 VISION_PROVIDER=facephys 会让逐帧管道的测试全部失效）
+#
+# .env 到底放哪：**backend/.env**。
+# 这不是随便定的 —— .env.example、deploy/setup.sh、ai-interview 侧车的
+# `--env-file-if-exists=../backend/.env` 全都指向它。
+# 注意这里**不能**再写 Path(__file__).with_name(".env")：config.py 平铺在
+# backend/ 下时它正好是 backend/.env，重构成 backend/shared/ 之后就变成
+# backend/shared/.env，写在 backend/.env 里的 key 会被静默忽略 ——
+# 症状是"明明填了 key，初筛还是报未配置。"
+_DOTENV_CANDIDATES = (
+    Path(__file__).resolve().parent.parent / ".env",   # backend/.env（正解）
+    Path(__file__).resolve().with_name(".env"),        # 旧位置，兼容
+)
+
 if os.getenv("TTC_SKIP_DOTENV") != "1":
-    _load_dotenv(Path(__file__).with_name(".env"))
+    for _candidate in _DOTENV_CANDIDATES:
+        if _candidate.exists():
+            _load_dotenv(_candidate)
+            break
 
 
 def _f(name: str, default: float) -> float:
@@ -133,3 +149,12 @@ LLM_TIMEOUT = _f("LLM_TIMEOUT", 8.0)
 # ---------- Mock 专用 ----------
 # 格式 "30-45,120-140"，表示这些时间段模拟负荷升高，方便排练 demo
 MOCK_STRESS_WINDOWS = os.getenv("MOCK_STRESS_WINDOWS", "25-40,85-100")
+
+# ---------- 队友测试通道 ----------
+# 留空 = 不设门。本机开发、跑测试的默认状态就是这个，行为完全不变。
+# 填了之后，除了 /healthz、/.well-known/ 和 CORS 预检，所有页面、接口和
+# WebSocket 都要先输一次口令。它不是账号体系，只回答"拿到这个链接的人
+# 是不是我们组的"；换一个口令 = 把所有已发出的 cookie 立刻作废。
+ACCESS_CODE = os.getenv("TTC_ACCESS_CODE", "").strip()
+# 口令 cookie 的有效天数。0 = 不过期，只能靠换口令吊销。
+ACCESS_CODE_DAYS = _i("TTC_ACCESS_CODE_DAYS", 14)
