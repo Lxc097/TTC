@@ -167,6 +167,27 @@
     } catch (_) { /* 诊断失败不能影响面试 */ }
   }
 
+  /*
+   * 给视频发送端设硬上限。
+   *
+   * 不设的时候编码器看到网络好就往 1.5Mbps 冲，WiFi 一拥塞又把码率砍到
+   * 270kbps，来回震荡——观感就是一卡一卡。640×480 的谈话画面 600kbps
+   * 足够清楚，把上限钉住，拥塞控制就不会去试探链路极限。
+   */
+  function applySenderLimits(pc) {
+    try {
+      pc.getSenders().forEach((sender) => {
+        if (!sender.track || sender.track.kind !== 'video') return;
+        const params = sender.getParameters();
+        if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+        params.encodings[0].maxBitrate = 600000;
+        params.encodings[0].maxFramerate = 24;
+        params.degradationPreference = 'balanced';
+        sender.setParameters(params).catch(() => { /* 协商前设置会失败，等下次 */ });
+      });
+    } catch (_) { /* 老浏览器没有 setParameters */ }
+  }
+
   function rtcReset() {
     const pc = state.pc;
     state.pc = null;
@@ -200,6 +221,7 @@
       if (pc.connectionState === 'connected') {
         state.pcLive = true;
         state.pcRetries = 0;
+        applySenderLimits(pc);
         if (state.pcTimer) clearTimeout(state.pcTimer);
         state.pcTimer = null;
         text('camera-status', '画面已直连面试官（点对点，不经过服务器）。');
@@ -230,7 +252,7 @@
     } catch (_) { rtcReset(); return; }
     send({ type: 'rtc', sub: 'offer', sdp: { type: 'offer', sdp: pc.localDescription.sdp } });
     rtcDiag('offer');
-    // 12 秒还没连上就重来一次：DTLS 卡住这类问题重建连接往往就好了
+    // 8 秒还没连上就重来一次：DTLS 卡住这类问题重建连接往往就好了
     if (state.pcTimer) clearTimeout(state.pcTimer);
     state.pcTimer = setTimeout(() => {
       if (state.pcLive) return;
@@ -243,7 +265,7 @@
         return;
       }
       text('camera-status', '点对点直连反复失败（路由器禁止设备互访或多层 NAT 都会这样），画面继续走逐帧通道。');
-    }, 12000);
+    }, 8000);
   }
 
   async function rtcOnMessage(message) {
