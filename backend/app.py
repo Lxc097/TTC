@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from shared import config
+from shared import stt as stt_module
 from access_gate import AccessGate
 from interviewer.api import router
 from candidate.recruitment_api import router as recruitment_router, start_worker, stop_worker
@@ -139,8 +140,9 @@ def client_config() -> dict:
         "hint_cooldown": config.HINT_COOLDOWN,
         "vision_provider": config.VISION_PROVIDER,
         # 前端据此决定：能不能开语音转写，还是只能用键盘手打
-        "stt_enabled": config.STT_ENABLED and bool(config.SILICONFLOW_API_KEY),
-        "stt_model": config.STT_MODEL,
+        "stt_enabled": bool(stt_module.provider()),
+        "stt_provider": stt_module.provider(),
+        "stt_model": stt_module.active_model(),
         "llm_enabled": config.LLM_ENABLED,
     }
 

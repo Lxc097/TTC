@@ -4,7 +4,8 @@ import { DIFFICULTY_PROFILES } from '../src/data/difficultyProfiles'
 import { createQuestionPlan } from '../src/services/interviewEngine'
 import { ROLE_LABELS, TYPE_LABELS, type InterviewConfig, type InterviewQuestion } from '../src/types/interview'
 import { createAudioTranscription, createChatCompletion, getSiliconFlowConfig, SiliconFlowError } from './siliconflow'
-import { generateQuestionPlan } from './questionPlan'
+import { createAudioTranscription as createQwenTranscription, createChatCompletion as createQwenChatCompletion, getQwenConfig, QwenError } from './qwen'
+import { generateQuestionPlan, type ChatCompleter } from './questionPlan'
 import { analyzeFacePhysVideo, FacePhysError, getFacePhysConfig, isFacePhysConfigured } from './facephys'
 
 interface SessionState {
@@ -17,8 +18,18 @@ interface SessionState {
 const sessions = new Map<string, SessionState>()
 const maxAgeMs = 60 * 60 * 1000
 const port = Number(process.env.INTERVIEW_API_PORT || 8787)
-const llm = getSiliconFlowConfig()
-const configured = Boolean(llm.apiKey)
+// 百炼优先：生产 .env 已切到 DASHSCOPE_*，硅基流动只作兜底。
+const qwenConfig = getQwenConfig()
+const siliconConfig = getSiliconFlowConfig()
+const provider = qwenConfig.apiKey ? 'qwen' : siliconConfig.apiKey ? 'siliconflow' : 'local'
+const configured = provider !== 'local'
+const chatModel = provider === 'qwen' ? qwenConfig.model : siliconConfig.model
+const complete: ChatCompleter = provider === 'qwen'
+  ? (messages, maxTokens) => createQwenChatCompletion(qwenConfig, messages, maxTokens)
+  : (messages, maxTokens) => createChatCompletion(siliconConfig, messages, maxTokens)
+const transcribeAudio = (audio: Uint8Array, mimeType: string): Promise<string> => provider === 'qwen'
+  ? createQwenTranscription(qwenConfig, audio, mimeType)
+  : createAudioTranscription(siliconConfig, audio, mimeType)
 const facephys = getFacePhysConfig()
 const facephysConfigured = isFacePhysConfigured(facephys)
 const maxVideoBytes = 40 * 1024 * 1024
@@ -151,10 +162,10 @@ async function generateFollowUp(session: SessionState, question: InterviewQuesti
     + '\n面试者刚才的回答：' + answer
     + '\n请基于该回答提出一条有针对性的追问。'
 
-  const response = await createChatCompletion(llm,
+  const response = await complete(
     [{ role: 'system', content: system }, { role: 'user', content: user }], 180)
   const result = questionFromModel(response)
-  if (!result) throw new Error('硅基流动没有返回有效追问。')
+  if (!result) throw new Error('模型没有返回有效追问。')
   return result
 }
 
@@ -167,10 +178,10 @@ async function generateAnswerSummary(session: SessionState, question: InterviewQ
     + '\n原题：' + question.prompt
     + '\n面试者回答：' + answer
     + '\n请用 25-80 字总结该回答体现出的熟悉程度、证据和缺口。'
-  const response = await createChatCompletion(llm,
+  const response = await complete(
     [{ role: 'system', content: system }, { role: 'user', content: user }], 120)
   const result = summaryFromModel(response)
-  if (!result) throw new Error('硅基流动没有返回有效回答总结。')
+  if (!result) throw new Error('模型没有返回有效回答总结。')
   return result
 }
 
@@ -178,7 +189,7 @@ const server = createServer(async (request, response) => {
   const path = new URL(request.url || '/', 'http://127.0.0.1').pathname
 
   if (request.method === 'GET' && path === '/api/interview/status') {
-    json(response, 200, { configured, provider: configured ? 'siliconflow' : 'local', model: configured ? llm.model : null })
+    json(response, 200, { configured, provider, model: configured ? chatModel : null })
     return
   }
 
@@ -189,7 +200,7 @@ const server = createServer(async (request, response) => {
 
   if (request.method === 'POST' && path === '/api/interview/transcribe') {
     if (!configured) {
-      json(response, 503, { error: 'SILICONFLOW_API_KEY 未设置；语音转写暂不可用。' })
+      json(response, 503, { error: 'DASHSCOPE_API_KEY / SILICONFLOW_API_KEY 未设置；语音转写暂不可用。' })
       return
     }
     const mimeType = String(request.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase()
@@ -199,11 +210,11 @@ const server = createServer(async (request, response) => {
     }
     try {
       const audio = await readAudio(request)
-      const text = await createAudioTranscription(llm, audio, mimeType)
+      const text = await transcribeAudio(audio, mimeType)
       json(response, 200, { text })
     } catch (error) {
       if (error instanceof AudioRequestError) json(response, error.status, { error: error.message })
-      else if (error instanceof SiliconFlowError) json(response, error.status, { error: error.message })
+      else if (error instanceof SiliconFlowError || error instanceof QwenError) json(response, error.status, { error: error.message })
       else if (error instanceof Error && error.name === 'TimeoutError') json(response, 504, { error: '语音转写超时，请重试或使用文字输入。' })
       else json(response, 502, { error: '语音转写暂不可用，请重试或使用文字输入。' })
     }
@@ -242,18 +253,18 @@ const server = createServer(async (request, response) => {
       const id = randomUUID()
       if (configured) {
         try {
-          const questionPlan = await generateQuestionPlan(config, llm)
+          const questionPlan = await generateQuestionPlan(config, complete)
           const questions = new Map(questionPlan.map((question) => [question.id, question]))
           sessions.set(id, { config: { ...config, resumeText: undefined }, questions, followUps: new Map(), createdAt: Date.now() })
-          json(response, 200, { id, mode: 'siliconflow', questions: questionPlan })
+          json(response, 200, { id, mode: provider, questions: questionPlan })
         } catch (error) {
-          const notice = error instanceof SiliconFlowError ? error.message
-            : error instanceof Error && error.message === 'DeepSeek 未返回完整的结构化题目。' ? error.message
-              : 'DeepSeek 出题暂不可用，已切换本地题库。'
+          const notice = error instanceof SiliconFlowError || error instanceof QwenError ? error.message
+            : error instanceof Error && error.message === '模型未返回完整的结构化题目。' ? error.message
+              : '模型出题暂不可用，已切换本地题库。'
           json(response, 200, { id, mode: 'local', questions: createQuestionPlan(config), notice })
         }
       } else {
-        json(response, 200, { id, mode: 'local', questions: createQuestionPlan(config), notice: '未配置 SILICONFLOW_API_KEY，当前使用本地题库。' })
+        json(response, 200, { id, mode: 'local', questions: createQuestionPlan(config), notice: '未配置 DASHSCOPE_API_KEY / SILICONFLOW_API_KEY，当前使用本地题库。' })
       }
     } catch {
       json(response, 400, { error: '无法读取面试配置。' })
@@ -268,7 +279,7 @@ const server = createServer(async (request, response) => {
       json(response, 404, { error: '面试会话不存在或已过期。' })
       return
     }
-    json(response, 200, { id, mode: 'siliconflow', questions: [...session.questions.values()] })
+    json(response, 200, { id, mode: provider === 'local' ? 'local' : provider, questions: [...session.questions.values()] })
     return
   }
 
@@ -289,7 +300,7 @@ const server = createServer(async (request, response) => {
         return
       }
       if (!configured) {
-        json(response, 503, { error: 'SILICONFLOW_API_KEY 未设置；当前只能使用本地回答总结。' })
+        json(response, 503, { error: 'DASHSCOPE_API_KEY / SILICONFLOW_API_KEY 未设置；当前只能使用本地回答总结。' })
         return
       }
       const session = sessions.get(body.sessionId)
@@ -304,11 +315,11 @@ const server = createServer(async (request, response) => {
         return
       }
       const summary = await generateAnswerSummary(session, question, answer)
-      json(response, 200, { mode: 'siliconflow', summary })
+      json(response, 200, { mode: provider, summary })
     } catch (error) {
-      if (error instanceof SiliconFlowError) json(response, error.status, { error: error.message })
-      else if (error instanceof Error && error.name === 'TimeoutError') json(response, 504, { error: '硅基流动请求超时；已保留本地回答总结。' })
-      else json(response, 502, { error: '硅基流动回答总结暂不可用；已保留本地回答总结。' })
+      if (error instanceof SiliconFlowError || error instanceof QwenError) json(response, error.status, { error: error.message })
+      else if (error instanceof Error && error.name === 'TimeoutError') json(response, 504, { error: '模型请求超时；已保留本地回答总结。' })
+      else json(response, 502, { error: '模型回答总结暂不可用；已保留本地回答总结。' })
     }
     return
   }
@@ -325,7 +336,7 @@ const server = createServer(async (request, response) => {
         return
       }
       if (!configured) {
-        json(response, 503, { error: 'SILICONFLOW_API_KEY 未设置；请使用本地题库模式。' })
+        json(response, 503, { error: 'DASHSCOPE_API_KEY / SILICONFLOW_API_KEY 未设置；请使用本地题库模式。' })
         return
       }
       const session = sessions.get(body.sessionId)
@@ -353,13 +364,13 @@ const server = createServer(async (request, response) => {
       session.followUps.set(question.id, count + 1)
       try {
         const prompt = await generateFollowUp(session, question, answer, previousPrompt)
-        json(response, 200, { mode: 'siliconflow', prompt, followUpCount: count + 1 })
+        json(response, 200, { mode: provider, prompt, followUpCount: count + 1 })
       } catch (error) {
         if (session.followUps.get(question.id) === count + 1) session.followUps.set(question.id, count)
-        if (error instanceof SiliconFlowError) json(response, error.status, { error: error.message })
+        if (error instanceof SiliconFlowError || error instanceof QwenError) json(response, error.status, { error: error.message })
         else if (error instanceof Error && error.name === 'TimeoutError')
-          json(response, 504, { error: '硅基流动请求超时；可继续本地题库追问。' })
-        else json(response, 502, { error: '硅基流动连接或响应异常；可继续本地题库追问。' })
+          json(response, 504, { error: '模型请求超时；可继续本地题库追问。' })
+        else json(response, 502, { error: '模型连接或响应异常；可继续本地题库追问。' })
       }
     } catch {
       json(response, 400, { error: '无法读取追问请求。' })
@@ -371,5 +382,5 @@ const server = createServer(async (request, response) => {
 })
 
 server.listen(port, '127.0.0.1', () => {
-  console.log('Interview API ready at http://127.0.0.1:' + port + ' (' + (configured ? 'SiliconFlow configured' : 'local fallback') + ')')
+  console.log('Interview API ready at http://127.0.0.1:' + port + ' (' + provider + ' configured)')
 })

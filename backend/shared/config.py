@@ -155,3 +155,19 @@ MOCK_STRESS_WINDOWS = os.getenv("MOCK_STRESS_WINDOWS", "25-40,85-100")
 ACCESS_CODE = os.getenv("TTC_ACCESS_CODE", "").strip()
 # 口令 cookie 的有效天数。0 = 不过期，只能靠换口令吊销。
 ACCESS_CODE_DAYS = _i("TTC_ACCESS_CODE_DAYS", 14)
+
+# ---------- 阿里云百炼 / Qwen（优先于 SiliconFlow）----------
+# 生产 .env 切到百炼之后，SILICONFLOW_* 会被移除，所以这里给出统一的
+# "文本模型"入口：有 DASHSCOPE_API_KEY 就用百炼，否则沿用 SiliconFlow。
+# 语音转写走 qwen3-asr-flash；文本模型默认 qwen3.8-max。
+DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "").strip()
+DASHSCOPE_BASE_URL = os.getenv(
+    "DASHSCOPE_BASE_URL",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1").strip()
+QWEN_TEXT_MODEL = os.getenv("QWEN_TEXT_MODEL", "qwen3.8-max").strip()
+QWEN_ASR_MODEL = os.getenv("QWEN_ASR_MODEL", "qwen3-asr-flash").strip()
+
+# 文本模型生效配置：百炼优先，SiliconFlow 兜底。
+LLM_API_KEY = DASHSCOPE_API_KEY or SILICONFLOW_API_KEY
+LLM_BASE_URL = DASHSCOPE_BASE_URL if DASHSCOPE_API_KEY else SILICONFLOW_BASE_URL
+LLM_MODEL = QWEN_TEXT_MODEL if DASHSCOPE_API_KEY else SILICONFLOW_MODEL

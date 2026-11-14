@@ -6,3 +6,5 @@ pypdf>=5.0
 python-docx>=1.1
 # SiliconFlow 语音转写 multipart 上传。
 requests>=2.31
+# 阿里云百炼（Qwen）语音转写：qwen3-asr-flash 走多模态接口。
+dashscope>=1.20

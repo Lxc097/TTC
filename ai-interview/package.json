@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "build:formal": "tsc -b && vite build --base=/ai-interview/",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test tests/interviewLogic.test.ts tests/siliconflow.test.ts tests/facephys.test.ts",
+    "test": "node --import tsx --test tests/interviewLogic.test.ts tests/siliconflow.test.ts tests/facephys.test.ts tests/qwen.test.ts",
     "smoke:siliconflow": "node --import tsx scripts/siliconflow-smoke.ts",
     "lint": "eslint .",
     "preview": "vite preview --host 127.0.0.1",

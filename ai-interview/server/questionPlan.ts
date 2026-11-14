@@ -1,7 +1,10 @@
 import { DIFFICULTY_PROFILES } from '../src/data/difficultyProfiles'
 import { createQuestionPlan } from '../src/services/interviewEngine'
 import { ROLE_LABELS, TYPE_LABELS, type InterviewConfig, type InterviewQuestion } from '../src/types/interview'
-import { createChatCompletion, type SiliconFlowConfig } from './siliconflow'
+import { type ChatCompletion, type ChatMessage } from './siliconflow'
+
+/** 由 index.ts 注入的补全函数：百炼优先，硅基流动兜底。 */
+export type ChatCompleter = (messages: ChatMessage[], maxTokens: number) => Promise<ChatCompletion>
 
 interface GeneratedQuestion { prompt: string; keywords: string[] }
 
@@ -31,7 +34,7 @@ export function parseGeneratedQuestions(content: string, count: number): Generat
   } catch { return null }
 }
 
-export async function generateQuestionPlan(config: InterviewConfig, llm: SiliconFlowConfig): Promise<InterviewQuestion[]> {
+export async function generateQuestionPlan(config: InterviewConfig, complete: ChatCompleter): Promise<InterviewQuestion[]> {
   const count = createQuestionPlan(config).length
   const profile = DIFFICULTY_PROFILES[config.difficulty]
   const target = config.targetRoleDescription?.trim().slice(0, 300) || ROLE_LABELS[config.role]
@@ -48,13 +51,13 @@ export async function generateQuestionPlan(config: InterviewConfig, llm: Silicon
     '<resume>', resume, '</resume>',
     '按岗位相关性与难度逐步深入。若简历包含项目或经历，至少一道题必须明确围绕其中一个真实细节提问，但不得编造；若未提供简历，基于目标岗位出题。只输出 JSON 数组。',
   ].join('\n')
-  const response = await createChatCompletion(llm, [
+  const response = await complete([
     { role: 'system', content: system },
     { role: 'user', content: user },
   ], 350 + count * 190)
   const content = response.choices?.[0]?.message?.content
   const generated = typeof content === 'string' ? parseGeneratedQuestions(content, count) : null
-  if (!generated) throw new Error('DeepSeek 未返回完整的结构化题目。')
+  if (!generated) throw new Error('模型未返回完整的结构化题目。')
   return generated.map((item, index) => ({
     id: 'ai-' + (index + 1),
     role: config.role,

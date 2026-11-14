@@ -87,13 +87,22 @@ MIN_PROBE_CHARS = 3
 class LLMClient:
     def __init__(self, api_key: str = "", base_url: str = "",
                  model: str = "", timeout: Optional[float] = None) -> None:
-        self.api_key = api_key or os.getenv("SILICONFLOW_API_KEY", "")
-        self.base = (base_url or os.getenv("SILICONFLOW_BASE_URL",
-                                           "https://api.siliconflow.cn/v1")).rstrip("/")
-        self.model = model or os.getenv("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V4-Pro")
+        # 百炼优先，SiliconFlow 兜底：生产 .env 切到 DASHSCOPE_* 之后仍能跑。
+        legacy_key = os.getenv("SILICONFLOW_API_KEY", "")
+        self.api_key = api_key or config.DASHSCOPE_API_KEY or legacy_key
+        if config.DASHSCOPE_API_KEY:
+            base_default = config.DASHSCOPE_BASE_URL
+            model_default = config.QWEN_TEXT_MODEL
+        else:
+            base_default = os.getenv("SILICONFLOW_BASE_URL",
+                                     "https://api.siliconflow.cn/v1")
+            model_default = os.getenv("SILICONFLOW_MODEL",
+                                      "deepseek-ai/DeepSeek-V4-Pro")
+        self.base = (base_url or base_default).rstrip("/")
+        self.model = model or model_default
         self.timeout = timeout or float(os.getenv("LLM_TIMEOUT", "30"))
         if not self.api_key:
-            raise RuntimeError("缺少 SILICONFLOW_API_KEY")
+            raise RuntimeError("缺少 DASHSCOPE_API_KEY（或 SILICONFLOW_API_KEY）")
         self.last_latency = 0.0
         self.last_raw = ""
         self.calls = 0
@@ -212,7 +221,8 @@ def get_llm() -> Optional[LLMClient]:
     if _INITED:
         return _LLM
     _INITED = True
-    if not config.LLM_ENABLED or not os.getenv("SILICONFLOW_API_KEY"):
+    if not config.LLM_ENABLED or not (
+            config.DASHSCOPE_API_KEY or os.getenv("SILICONFLOW_API_KEY")):
         _LLM = None
     else:
         _LLM = LLMClient()
