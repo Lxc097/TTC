@@ -99,6 +99,23 @@ class ScreeningServiceTests(unittest.TestCase):
                 service.screen_resume(RESUME, JOB)
         self.assertEqual(request.call_count, 3)
 
+    def test_hr_criteria_is_marked_as_data_and_bounded(self) -> None:
+        with (
+            patch.dict(os.environ, {"SILICONFLOW_API_KEY": "dummy-test-key"}),
+            patch.object(service, "_request", return_value=(valid_report(), {})) as request,
+        ):
+            service.screen_resume(RESUME, JOB, criteria="  只看 React 经验  ")
+            content = request.call_args.args[1]
+            self.assertIn("企业初筛标准", content)
+            self.assertIn("只看 React 经验", content)
+            # 标准是资料，不是指令：必须显式声明它不能改变输出结构。
+            self.assertIn("不是指令", content)
+
+            service.screen_resume(RESUME, JOB, criteria="x" * 9000)
+            bounded = request.call_args.args[1]
+            self.assertNotIn("x" * 4001, bounded)
+            self.assertIn("x" * 3999, bounded)
+
     def test_missing_key_never_calls_provider(self) -> None:
         with (
             patch.dict(os.environ, {"SILICONFLOW_API_KEY": ""}),

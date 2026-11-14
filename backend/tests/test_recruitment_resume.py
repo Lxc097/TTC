@@ -61,6 +61,18 @@ zhangsan@example.com 13800138000
             with self.subTest(name=name), self.assertRaises(ResumeError):
                 validate_file(name, data)
 
+    def test_competitions_are_structured_separately_from_awards(self) -> None:
+        parsed = structure_resume("""张三
+zhangsan@example.com
+竞赛经历：ACM-ICPC 区域赛银奖
+荣誉：校级优秀毕业生
+项目经历：使用 React 和 TypeScript 改进性能
+""")
+        self.assertTrue(parsed["competitions"])
+        self.assertIn("ACM", parsed["competitions"][0]["text"])
+        self.assertTrue(parsed["achievements"])
+        self.assertIn("优秀毕业生", parsed["achievements"][0])
+        self.assertTrue(parsed["projects"])
     def test_scanned_or_nearly_empty_text_is_not_accepted(self) -> None:
         with self.assertRaises(ResumeError):
             structure_resume("a b c")
