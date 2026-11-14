@@ -796,7 +796,7 @@ routes['/interviewer/room/:id'] = {
       '</main>' + footerHtml();
   },
   mount(p) {
-    const state = { code: p.id, ticket: hrRoomTicket(p.id), linked: Boolean(hrRoomTicket(p.id)), sec: 0, capi: 0, adopt: 0, ignore: 0, cues: [], ws: null, ended: false, hasSignal: false, pc: null, pcPending: [], rtcLive: false };
+    const state = { code: p.id, ticket: hrRoomTicket(p.id), linked: Boolean(hrRoomTicket(p.id)), sec: 0, capi: 0, adopt: 0, ignore: 0, cues: [], ws: null, ended: false, hasSignal: false, pc: null, pcPending: [], rtcLive: false, rtcTimer: null };
     document.body.classList.add('room-wide');
     window.__corgiJob = '前端工程师';
     every(() => { state.sec++; $('#timer').textContent = fmtTs(state.sec); }, 1000);
@@ -878,6 +878,9 @@ function connectInterviewer(state) {
 const RTC_ICE_SERVERS = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
   { urls: ['stun:stun.cloudflare.com:3478'] },
+  // 国内可达的 STUN：Google 在国内基本不通
+  { urls: ['stun:stun.qq.com:3478'] },
+  { urls: ['stun:stun.chat.bilibili.com:3478'] },
 ];
 
 function rtcReset(state) {
@@ -885,6 +888,8 @@ function rtcReset(state) {
   state.pc = null;
   state.pcPending = [];
   state.rtcLive = false;
+  if (state.rtcTimer) clearTimeout(state.rtcTimer);
+  state.rtcTimer = null;
   if (pc) { try { pc.close(); } catch (_) { /* 已经关了 */ } }
   const video = $('#peerVideoRtc');
   if (video) { try { video.srcObject = null; } catch (_) { /* 已清空 */ } video.classList.remove('on'); }
@@ -928,7 +933,7 @@ function rtcEnsure(state) {
     } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
       rtcReset(state);
       const chip = $('#stageChip');
-      if (chip) chip.textContent = '点对点断开 · 已切回逐帧';
+      if (chip) chip.textContent = '点对点未建立 · 逐帧画面';
     }
   };
   return pc;
@@ -951,6 +956,13 @@ async function rtcOnMessage(state, m) {
         state.ws.send(JSON.stringify({ type: 'rtc', sub: 'answer',
                                        sdp: { type: 'answer', sdp: pc.localDescription.sdp } }));
       }
+      // 12 秒没连上就让角标说清楚，避免把逐帧画面当成"实时视频"
+      if (state.rtcTimer) clearTimeout(state.rtcTimer);
+      state.rtcTimer = setTimeout(() => {
+        if (state.rtcLive) return;
+        const chip = $('#stageChip');
+        if (chip) chip.textContent = '点对点未建立 · 逐帧画面';
+      }, 12000);
     } catch (_) { rtcReset(state); }
     return;
   }

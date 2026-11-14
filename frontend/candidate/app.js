@@ -20,6 +20,7 @@
     pc: null,
     pcPending: [],
     pcLive: false,
+    pcTimer: null,
     clipRecorder: null,
     clipTimer: null,
     recordRequest: null,
@@ -100,6 +101,9 @@
   const RTC_ICE_SERVERS = [
     { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
     { urls: ['stun:stun.cloudflare.com:3478'] },
+    // 国内可达的 STUN：Google 在国内基本不通，只靠它会在出网时就卡住。
+    { urls: ['stun:stun.qq.com:3478'] },
+    { urls: ['stun:stun.chat.bilibili.com:3478'] },
   ];
 
   function rtcReset() {
@@ -107,6 +111,8 @@
     state.pc = null;
     state.pcPending = [];
     state.pcLive = false;
+    if (state.pcTimer) clearTimeout(state.pcTimer);
+    state.pcTimer = null;
     if (pc) { try { pc.close(); } catch (_) { /* 已经关了 */ } }
   }
 
@@ -129,10 +135,12 @@
       if (state.pc !== pc) return;
       if (pc.connectionState === 'connected') {
         state.pcLive = true;
+        if (state.pcTimer) clearTimeout(state.pcTimer);
+        state.pcTimer = null;
         text('camera-status', '画面已直连面试官（点对点，不经过服务器）。');
       } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         rtcReset();
-        text('camera-status', '点对点没打通，已自动切回逐帧通道；面试不受影响。');
+        text('camera-status', '点对点直连没打通（路由器禁止设备互访或多层 NAT 都会这样），已切回逐帧画面。');
       }
     };
     return pc;
@@ -154,6 +162,12 @@
       await pc.setLocalDescription(offer);
     } catch (_) { rtcReset(); return; }
     send({ type: 'rtc', sub: 'offer', sdp: { type: 'offer', sdp: pc.localDescription.sdp } });
+    // 12 秒还没连上就明确告诉人原因，别让人对着"开着摄像头"的提示页干等
+    if (state.pcTimer) clearTimeout(state.pcTimer);
+    state.pcTimer = setTimeout(() => {
+      if (state.pcLive) return;
+      text('camera-status', '点对点直连 12 秒仍未建立（常见于路由器隔离或多层 NAT），画面继续走逐帧通道。');
+    }, 12000);
   }
 
   async function rtcOnMessage(message) {
@@ -553,7 +567,9 @@
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},frameRate:{ideal:5}},audio:false});
+      // 帧率给到 24：这路流同时喂 WebRTC 直连画面，5fps 会明显一顿一顿。
+      // 逐帧 JPEG 采样是另一条定时器，与这里的帧率无关，不会因此多耗带宽。
+      const stream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},frameRate:{ideal:24,max:30}},audio:false});
       if (!wsReady()) { stream.getTracks().forEach((track) => track.stop()); return; }
       state.cameraStream = stream;
       const video = document.getElementById('camera-preview');
@@ -567,6 +583,12 @@
       const context = canvas.getContext('2d');
       state.frameTimer = setInterval(() => {
         if (!wsReady() || !state.cameraStream || !context || video.readyState < 2) return;
+        // 直连通了以后逐帧只用来喂分析，2 秒一张就够；
+        // 直连没通时面试官只能看这条路，缩到 800 毫秒一张（约 1.7fps），
+        // 比原来的 2 秒一张顺，又不至于把跨境上行塞满。
+        const now = Date.now();
+        if (now - (state.lastFrameAt || 0) < (state.pcLive ? 2000 : 800)) return;
+        state.lastFrameAt = now;
         try {
           // 手机竖屏给的是纵向画面，直接拉伸会把人脸拉扁：按 cover 居中裁剪再画
           const vw = video.videoWidth || 320;
@@ -575,9 +597,10 @@
           const sw = 320 / scale;
           const sh = 240 / scale;
           context.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, 320, 240);
-          send({type:'frame',img:canvas.toDataURL('image/jpeg',.55)});
+          // 直连正常时把画质再压一点，这条路只是兜底
+          send({type:'frame',img:canvas.toDataURL('image/jpeg', state.pcLive ? .4 : .5)});
         } catch (_) { /* No invented frame on capture failure. */ }
-      }, isMobile() ? 2600 : 2000);
+      }, 400);
       text('camera-status','摄像头已开启，画面按房间协议发送；你可随时停止。');
       text('camera-button','停止摄像头');
       // 面试官已经在房间里的话，开摄即发起点对点直连
