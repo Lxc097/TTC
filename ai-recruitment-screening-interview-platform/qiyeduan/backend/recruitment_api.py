@@ -105,6 +105,8 @@ def _candidate_dto(row: dict) -> dict:
 
 def _hr_dto(row: dict, detail: bool = False) -> dict:
     screening = json.loads(row["report_json"]) if row["report_json"] else None
+    parsed_resume = json.loads(row["parsed_json"]) if detail and row["parsed_json"] else None
+    imported = row["source"] == "hr_import"
     room = STORE.get_room(row["room_code"]) if row["room_code"] else None
     if (detail and row["invitation_id"]
             and row["invitation_status"] != "completed"
@@ -120,8 +122,11 @@ def _hr_dto(row: dict, detail: bool = False) -> dict:
                       "interviewPath": ("/classic/?room=" + room.code + "&ticket=" + room.interviewer_ticket)
                       if room and room.interviewer_ticket else None}
     result = {"id": row["id"], "jobId": row["job_id"], "jobTitle": row["job_title"],
-              "companyName": row["company_name"], "candidateName": row["candidate_name"],
-              "candidateEmail": row["candidate_email"], "createdAt": row["created_at"],
+              "companyName": row["company_name"],
+              "candidateName": (parsed_resume or {}).get("name") or row["candidate_name"],
+              "candidateEmail": ((parsed_resume or {}).get("contact") or {}).get("email") if imported
+              else row["candidate_email"], "createdAt": row["created_at"],
+              "source": row["source"],
               "status": row["status"], "resumeStatus": row["resume_status"],
               "screeningStatus": row["screening_status"],
               "matchScore": screening["jobMatch"]["score"] if screening else None,
@@ -129,8 +134,9 @@ def _hr_dto(row: dict, detail: bool = False) -> dict:
               "reviewStatus": row["review_decision"], "invitation": invitation}
     if detail:
         result.update({"fileName": row["original_name"],
+                       "uploadedBy": row["uploaded_by_name"] if imported else None,
                        "resumeDownloadPath": "/api/hr/applications/" + row["id"] + "/resume",
-                       "parsedResume": json.loads(row["parsed_json"]) if row["parsed_json"] else None,
+                       "parsedResume": parsed_resume,
                        "resumeError": row["resume_error"], "screening": screening,
                        "screeningError": row["screening_error"],
                        "screeningMeta": {"model": row["model"], "promptVersion": row["prompt_version"],
@@ -325,6 +331,43 @@ async def submit_application(resume: UploadFile = File(...), jobId: str = Form(.
     return {"application": _candidate_dto(row)}
 
 
+@router.post("/api/hr/resumes/import", status_code=202)
+async def import_hr_resume(resume: UploadFile = File(...), jobId: str = Form(...),
+                           candidateName: str = Form(""), permissionConfirmed: bool = Form(...),
+                           user: dict = Depends(hr)) -> dict:
+    if not permissionConfirmed:
+        raise HTTPException(422, "请确认已获得处理该简历用于当前岗位评估的授权。")
+    job = repo.get_job(jobId)
+    if not job or job["company_id"] != user["companyId"]:
+        raise HTTPException(404, "岗位不存在或不属于当前企业。")
+    name = (resume.filename or "").replace("\\", "/").split("/")[-1][:180]
+    if not name.lower().endswith(".pdf"):
+        raise HTTPException(422, "企业导入仅支持 PDF 简历。")
+    data = await resume.read(MAX_FILE_BYTES + 1)
+    try:
+        _, content_type = validate_file(name, data)
+    except ResumeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    target_dir = repo.data_dir() / "resumes"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / (uuid.uuid4().hex + ".pdf")
+    with target.open("xb") as out:
+        out.write(data)
+    display_name = candidateName.strip()[:100] or Path(name).stem[:100] or "待识别候选人"
+    try:
+        app_id = repo.create_hr_import(user["companyId"], user["id"], jobId,
+                                       display_name, name, content_type, str(target),
+                                       hashlib.sha256(data).hexdigest())
+    except ValueError as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(404, str(exc)) from exc
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    row = repo.hr_application(app_id, user["companyId"])
+    return {"application": _hr_dto(row)}
+
+
 @router.get("/api/applications/my")
 def my_applications(user: dict = Depends(candidate)) -> dict:
     return {"items": [_candidate_dto(row) for row in repo.candidate_applications(user["id"])]}
@@ -365,7 +408,8 @@ def submit_correction(app_id: str, body: CorrectionBody,
 def list_hr_applications(jobId: str | None = None, status: str | None = None,
                          manualReview: bool = False, since: float | None = Query(None, ge=0),
                          user: dict = Depends(hr)) -> dict:
-    return {"items": [_hr_dto(row) for row in repo.hr_applications(
+    return {"counts": repo.resume_source_counts(user["companyId"]),
+            "items": [_hr_dto(row) for row in repo.hr_applications(
         user["companyId"], job_id=jobId, status=status,
         manual_review=manualReview, since=since)]}
 
@@ -426,6 +470,8 @@ def review_application(app_id: str, body: ReviewBody, user: dict = Depends(hr)) 
     if row["status"] in ("ai_interview_in_progress", "ai_interview_completed") and body.decision != "invite":
         raise HTTPException(409, "面试已开始，不能改为暂缓。")
     if body.decision == "invite":
+        if row["source"] == "hr_import":
+            raise HTTPException(409, "企业导入简历尚未关联候选人账号，不能发送线上初面邀请。")
         repo.ensure_invitation(app_id)
         _ensure_room(row)
         status = "ai_interview_invited" if row["status"] not in (

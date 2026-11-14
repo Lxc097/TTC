@@ -81,6 +81,44 @@ class RecruitmentStoreTests(unittest.TestCase):
         self.assertEqual(row["screening_status"], "queued")
         self.assertEqual(row["status"], "submitted")
 
+    def test_hr_import_counts_and_cleanup(self) -> None:
+        path = store.data_dir() / "imported.pdf"
+        path.write_bytes(b"%PDF-fixture")
+        imported_id = store.create_hr_import(self.hr["companyId"], self.hr["id"],
+            self.job["id"], "Imported Candidate", "imported.pdf", "application/pdf",
+            str(path), "def456")
+        with store.db() as connection:
+            imported_user = connection.execute("SELECT candidate_id FROM applications WHERE id=?",
+                                               (imported_id,)).fetchone()[0]
+        self.assertIsNone(store.candidate_application(imported_id, imported_user))
+        self.assertEqual(store.hr_application(imported_id, self.hr["companyId"])["source"], "hr_import")
+        self.assertEqual(store.resume_source_counts(self.hr["companyId"]),
+                         {"total": 2, "candidatePortal": 1, "hrImport": 1})
+        self.assertEqual(store.resume_source_counts(self.other_hr["companyId"])["total"], 0)
+        store.delete_application(imported_id)
+        self.assertFalse(path.exists())
+        with store.db() as connection:
+            self.assertIsNone(connection.execute("SELECT id FROM users WHERE id=?",
+                                                 (imported_user,)).fetchone())
+
+    def test_existing_database_adds_resume_source_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(os.environ, {"RECRUITMENT_DATA_DIR": directory}):
+                connection = sqlite3.connect(Path(directory) / "recruitment.sqlite3")
+                connection.execute("""CREATE TABLE applications (
+                  id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL REFERENCES users(id),
+                  job_id TEXT NOT NULL REFERENCES jobs(id), status TEXT NOT NULL,
+                  resume_status TEXT NOT NULL, screening_status TEXT NOT NULL,
+                  verify_links INTEGER NOT NULL DEFAULT 0,
+                  created_at REAL NOT NULL, updated_at REAL NOT NULL,
+                  UNIQUE(candidate_id, job_id))""")
+                connection.commit()
+                connection.close()
+                store.init_db()
+                with store.db() as migrated:
+                    columns = {row[1] for row in migrated.execute("PRAGMA table_info(applications)")}
+                self.assertTrue({"source", "uploaded_by"}.issubset(columns))
+
 
 if __name__ == "__main__":
     unittest.main()

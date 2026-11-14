@@ -68,6 +68,8 @@ def init_db() -> None:
           resume_status TEXT NOT NULL, screening_status TEXT NOT NULL,
           verify_links INTEGER NOT NULL DEFAULT 0,
           created_at REAL NOT NULL, updated_at REAL NOT NULL,
+          source TEXT NOT NULL DEFAULT 'candidate_portal',
+          uploaded_by TEXT REFERENCES users(id),
           UNIQUE(candidate_id, job_id)
         );
         CREATE TABLE IF NOT EXISTS resumes (
@@ -113,6 +115,11 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS applications_job_idx ON applications(job_id, created_at);
         CREATE INDEX IF NOT EXISTS applications_queue_idx ON applications(screening_status, created_at);
         """)
+        application_columns = {row[1] for row in connection.execute("PRAGMA table_info(applications)")}
+        if "source" not in application_columns:
+            connection.execute("ALTER TABLE applications ADD COLUMN source TEXT NOT NULL DEFAULT 'candidate_portal'")
+        if "uploaded_by" not in application_columns:
+            connection.execute("ALTER TABLE applications ADD COLUMN uploaded_by TEXT REFERENCES users(id)")
         columns = {row[1] for row in connection.execute("PRAGMA table_info(formal_interviews)")}
         if "questions_json" not in columns:
             connection.execute("ALTER TABLE formal_interviews ADD COLUMN questions_json TEXT NOT NULL DEFAULT '[]'")
@@ -274,7 +281,9 @@ def create_application(candidate_id: str, job_id: str, file_name: str,
                        verify_links: bool) -> str:
     app_id, now = _id(), time.time()
     with db() as connection:
-        connection.execute("""INSERT INTO applications VALUES (?,?,?,?,?,?,?,?,?)""",
+        connection.execute("""INSERT INTO applications
+          (id,candidate_id,job_id,status,resume_status,screening_status,verify_links,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?)""",
           (app_id, candidate_id, job_id, "submitted", "queued", "queued", int(verify_links), now, now))
         connection.execute("""INSERT INTO resumes
           (application_id,original_name,content_type,file_path,sha256)
@@ -283,11 +292,50 @@ def create_application(candidate_id: str, job_id: str, file_name: str,
     return app_id
 
 
+def create_hr_import(company_id: str, uploader_id: str, job_id: str,
+                     candidate_name: str, file_name: str, content_type: str,
+                     file_path: str, sha256: str) -> str:
+    """Keep imported resumes in the normal queue without granting a candidate account access."""
+    app_id, user_id, now = _id(), _id(), time.time()
+    salt = secrets.token_hex(16)
+    with db() as connection:
+        job = connection.execute("SELECT 1 FROM jobs WHERE id=? AND company_id=? AND published=1",
+                                 (job_id, company_id)).fetchone()
+        if not job:
+            raise ValueError("岗位不存在或不属于当前企业。")
+        connection.execute("""INSERT INTO users
+          (id,name,email,password_salt,password_hash,role,company_id,created_at)
+          VALUES (?,?,?,?,?,'candidate',NULL,?)""",
+          (user_id, candidate_name, f"hr-import-{user_id}@example.invalid", salt,
+           _password_hash(secrets.token_urlsafe(32), salt), now))
+        connection.execute("""INSERT INTO applications
+          (id,candidate_id,job_id,status,resume_status,screening_status,verify_links,
+           created_at,updated_at,source,uploaded_by)
+          VALUES (?,?,?,'submitted','queued','queued',0,?,?,'hr_import',?)""",
+          (app_id, user_id, job_id, now, now, uploader_id))
+        connection.execute("""INSERT INTO resumes
+          (application_id,original_name,content_type,file_path,sha256)
+          VALUES (?,?,?,?,?)""", (app_id, file_name, content_type, file_path, sha256))
+        connection.execute("INSERT INTO screenings (application_id) VALUES (?)", (app_id,))
+    return app_id
+
+
+def resume_source_counts(company_id: str) -> dict:
+    with db() as connection:
+        rows = connection.execute("""SELECT a.source, COUNT(*) AS count FROM applications a
+          JOIN jobs j ON j.id=a.job_id WHERE j.company_id=? GROUP BY a.source""",
+          (company_id,)).fetchall()
+    counts = {row["source"]: row["count"] for row in rows}
+    return {"total": sum(counts.values()), "candidatePortal": counts.get("candidate_portal", 0),
+            "hrImport": counts.get("hr_import", 0)}
+
+
 def _application_query(where: str, args: tuple) -> list[dict]:
     with db() as connection:
         rows = connection.execute(f"""SELECT a.*, j.title AS job_title,
           j.description AS job_description, j.company_id, c.name AS company_name,
           u.name AS candidate_name, u.email AS candidate_email,
+          uploader.name AS uploaded_by_name,
           r.original_name, r.content_type, r.file_path, r.raw_text, r.parsed_json, r.error AS resume_error,
           s.report_json, s.model, s.prompt_version, s.attempts,
           s.prompt_tokens, s.completion_tokens, s.error AS screening_error,
@@ -295,6 +343,7 @@ def _application_query(where: str, args: tuple) -> list[dict]:
           rev.decision AS review_decision, rev.notes AS review_notes, rev.updated_at AS reviewed_at
           FROM applications a JOIN jobs j ON j.id=a.job_id
           JOIN companies c ON c.id=j.company_id JOIN users u ON u.id=a.candidate_id
+          LEFT JOIN users uploader ON uploader.id=a.uploaded_by
           JOIN resumes r ON r.application_id=a.id
           JOIN screenings s ON s.application_id=a.id
           LEFT JOIN invitations v ON v.application_id=a.id
@@ -319,7 +368,7 @@ def _candidate_query(where: str, args: tuple) -> list[dict]:
           JOIN companies c ON c.id=j.company_id
           JOIN resumes r ON r.application_id=a.id
           LEFT JOIN invitations v ON v.application_id=a.id
-          WHERE {where} ORDER BY a.created_at DESC""", args).fetchall()
+          WHERE a.source='candidate_portal' AND ({where}) ORDER BY a.created_at DESC""", args).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -340,7 +389,8 @@ def candidate_interview_context(app_id: str, candidate_id: str) -> dict | None:
           r.raw_text FROM applications a JOIN jobs j ON j.id=a.job_id
           JOIN resumes r ON r.application_id=a.id
           LEFT JOIN invitations v ON v.application_id=a.id
-          WHERE a.id=? AND a.candidate_id=?""", (app_id, candidate_id)).fetchone()
+          WHERE a.id=? AND a.candidate_id=? AND a.source='candidate_portal'""",
+          (app_id, candidate_id)).fetchone()
     return dict(row) if row else None
 
 
@@ -590,7 +640,13 @@ def mark_interview_completed(app_id: str) -> None:
 def delete_application(app_id: str) -> None:
     with db() as connection:
         row = connection.execute("SELECT file_path FROM resumes WHERE application_id=?", (app_id,)).fetchone()
+        application = connection.execute("SELECT candidate_id,source FROM applications WHERE id=?",
+                                         (app_id,)).fetchone()
         connection.execute("DELETE FROM applications WHERE id=?", (app_id,))
+        if application and application["source"] == "hr_import":
+            connection.execute("""DELETE FROM users WHERE id=? AND NOT EXISTS
+              (SELECT 1 FROM applications WHERE candidate_id=?)""",
+              (application["candidate_id"], application["candidate_id"]))
     if row:
         Path(row["file_path"]).unlink(missing_ok=True)
 

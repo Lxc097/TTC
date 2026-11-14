@@ -13,8 +13,8 @@ TTC 原有企业面试官与候选人双人面试系统，包含实时提示、�
 | 模块 | 当前行为 | 主要位置 |
 |---|---|---|
 | 候选人端 | 登录、查看岗位、投递简历、查看进度/邀请、申请更正和删除本人申请 | personal/recruitment.js、personal/*.html |
-| 企业端 | 发布岗位、查看本企业申请和原件、查看 AI 初筛、记录内部审核意见、邀请或暂缓 | frontend/screening.js、frontend/screening.html |
-| 简历处理 | 仅接收不超过 8 MB 的 PDF/DOCX；解析原文和结构化字段，异步持久化 | qiyeduan/backend/recruitment_resume.py、recruitment_api.py |
+| 企业端 | 发布岗位、录入已有 PDF 简历、按来源统计与筛选、查看本企业申请和原件、记录审核意见 | frontend/screening.js、frontend/screening.html |
+| 简历处理 | 个人端接收不超过 8 MB 的 PDF/DOCX；企业端接收不超过 8 MB 的 PDF；共用解析与初筛队列 | qiyeduan/backend/recruitment_resume.py、recruitment_api.py |
 | AI 初筛 | 按岗位 JD、简历与候选人授权的职业链接生成结构化报告；核对模型引用；失败可重试 | resume_screening_prompt.py、resume_screening_service.py、recruitment_evidence.py |
 | 正式 AI 初面 | 已获邀申请才能开始；服务端记录题目和回答；所有题目有效回答后才能完成 | formal_interview_api.py、recruitment_store.py、gerenduan/ |
 | 面试分析 | 初面完成后异步调用模型，生成有回答原文引证的 HR 分析；失败可重试 | interview_analysis_service.py、recruitment_api.py |
@@ -26,11 +26,13 @@ TTC 原有企业面试官与候选人双人面试系统，包含实时提示、�
 
 FastAPI 是统一入口，默认监听 127.0.0.1:8000：挂载 /classic/ 企业静态页、/personal/ 候选人静态页及构建后的 /ai-interview/。招聘相关路由在 recruitment_api.py；正式面试路由在 formal_interview_api.py。SQLite 和简历原件保存在后端的 .local-data/ 或 RECRUITMENT_DATA_DIR 指定目录，数据由 recruitment_store.py 管理。
 
+简历来源在同一个 SQLite applications 表以 source 字段区分：candidate_portal 为个人投递，hr_import 为企业录入。企业端 POST /api/hr/resumes/import 上传 PDF 时必须选择本企业岗位并确认已有招聘评估授权；uploaded_by 记录录入人。GET /api/hr/applications 返回本企业两种来源的计数。旧数据库启动自动迁移，既有记录默认视为个人投递。企业录入的简历尚未绑定可登录的候选人账号，因此个人端不可见，也不能发送线上初面邀请；HR 可先核验或暂缓。
+
 正式 AI 初面的 React/Vite 界面和 Node 侧车在 gerenduan/。侧车默认监听本机 8787；若改用 8788，后端 INTERVIEW_SIDECAR_URL 与侧车 INTERVIEW_API_PORT 必须一致。后端代浏览器调用侧车，并验证申请归属、邀请状态与尝试 ID。硅基流动凭据只由服务端读取；初筛、面试后分析及正式初面的模型交互应始终留在服务端。
 
 主要流程：
 
-1. HR 发布包含职责和必备要求的岗位；候选人选择岗位并授权提交简历。
+1. HR 发布包含职责和必备要求的岗位；简历可由候选人自行投递，或由企业在已获授权后录入 PDF。两种入口统一入库和统计。
 2. 后台解析简历，按用户授权处理职业作品链接，然后调用硅基流动兼容的聊天接口。默认模型由 SILICONFLOW_MODEL 指定，当前默认值为 deepseek-ai/DeepSeek-V4.1-Flash。
 3. 初筛结果通过严格 JSON Schema；简历/JD 引文必须能在原文定位。PDF/DOCX 换行及空白差异会被容忍；无法定位的引文被剔除并加入限制说明。缺少足够岗位描述或有效证据时不给匹配分。
 4. HR 查看“经历内容与待核实点”、匹配依据、限制和原始文件。结构化简历默认折叠，页面不再重复铺开整份解析原文。HR 审核意见仅记录企业内部核验与决策依据。

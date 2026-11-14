@@ -8,6 +8,7 @@
   const byId = (id) => document.getElementById(id);
   let entries = [];
   let jobs = [];
+  let sourceCounts = {total:0,candidatePortal:0,hrImport:0};
   let demoMode = false;
   let detailPoll = null;
 
@@ -56,6 +57,7 @@
   function statusLabel(value) { return ({submitted:'已提交',parsing:'解析中',screening:'初筛中',hr_review:'待 HR 审核',ai_interview_invited:'已邀 AI 辅助初面',ai_interview_in_progress:'AI 辅助初面中',ai_interview_completed:'AI 辅助初面完成',hr_interview_invited:'已邀企业复试',closed:'已结束',failed:'处理异常'})[value] || '待处理'; }
   function recommendationLabel(value) { return ({invite:'建议邀请 AI 辅助初面',invite_interview:'建议邀请 AI 辅助初面',invite_ai_interview:'建议邀请 AI 辅助初面',manual_review:'建议 HR 审核',insufficient_evidence:'匹配证据不足'})[value] || '待初筛'; }
   function processLabel(value) { return ({queued:'排队中',parsing:'解析中',screening:'初筛中',completed:'已完成',failed:'处理失败',skipped:'已跳过'})[value] || value || '待处理'; }
+  function sourceLabel(value) { return value === 'hr_import' ? '企业录入' : '个人投递'; }
   function safeUrl(value) { try { const url = new URL(value); return ['https:','http:'].includes(url.protocol) ? url.href : ''; } catch (_) { return ''; } }
   function listStrings(values, empty) { return Array.isArray(values) && values.length ? '<ul>' + values.map((item) => '<li>' + esc(typeof item === 'string' ? item : item?.text || item?.requirement || JSON.stringify(item)) + '</li>').join('') + '</ul>' : '<p class="screen-empty-copy">' + esc(empty || '尚无资料') + '</p>'; }
   function reviewStatus(value) {
@@ -104,13 +106,43 @@
   }
 
   function renderList() {
-    app.innerHTML = '<div class="screen-heading"><div><span class="eyebrow">企业端 · 招聘流程</span><h1>简历初筛</h1><p>从岗位要求、候选人声明和证据出发，完成一次可复核的人工审核。</p></div><button id="screen-new-job" class="btn btn-primary" type="button">发布岗位</button></div>'
+    app.innerHTML = '<div class="screen-heading"><div><span class="eyebrow">企业端 · 招聘流程</span><h1>简历初筛</h1><p>个人投递与企业录入统一保存、统计，并按岗位进行可复核的初筛。</p></div><div class="screen-heading-actions"><button id="screen-new-import" class="btn btn-primary" type="button">录入 PDF 简历</button><button id="screen-new-job" class="btn btn-ghost" type="button">发布岗位</button></div></div>'
       + '<form id="screen-job-form" class="card screen-job-form screen-hidden"><h2>发布招聘岗位</h2><p>岗位说明将作为简历初筛和后续面试的依据。</p><label for="new-job-title">岗位名称</label><input id="new-job-title" class="input" required maxlength="120" placeholder="例如：后端开发工程师"><label for="new-job-description">岗位职责与必备要求</label><textarea id="new-job-description" class="input" required minlength="30" maxlength="8000" rows="6" placeholder="写明职责、必备技能和经验要求，至少 30 字"></textarea><p id="screen-job-error" class="screen-error screen-hidden" role="alert"></p><div class="screen-form-actions"><button class="btn btn-primary" type="submit" id="screen-job-submit">发布岗位</button><button class="btn btn-ghost" type="button" id="screen-job-cancel">取消</button></div></form>'
-      + '<section class="screen-filters" aria-label="筛选申请"><label>岗位<select id="filter-job"><option value="">全部岗位</option></select></label><label>申请状态<select id="filter-status"><option value="">全部状态</option><option value="hr_review">待 HR 审核</option><option value="ai_interview_invited">已邀 AI 辅助初面</option><option value="ai_interview_completed">AI 辅助初面完成</option><option value="failed">处理异常</option></select></label><label>审核重点<select id="filter-review"><option value="">全部</option><option value="manual">需要人工复核</option><option value="pending">待审核</option></select></label><label>投递时间<input id="filter-date" type="date"></label></section>'
-      + '<p id="screen-list-error" class="screen-error screen-hidden" role="alert"></p><div class="screen-table-wrap"><table class="screen-table"><thead><tr><th>候选人 / 岗位</th><th>投递时间</th><th>申请进度</th><th>处理状态</th><th>匹配指标</th><th>初筛建议</th><th>HR 审核</th><th></th></tr></thead><tbody id="screen-rows"><tr><td colspan="8">正在读取申请…</td></tr></tbody></table></div>';
+      + '<form id="screen-import-form" class="card screen-job-form screen-hidden"><h2>录入企业已有简历</h2><p>选择本企业岗位，上传 PDF 后写入本地数据库，并进入与个人投递相同的解析和初筛队列。</p><label for="import-job">目标岗位</label><select id="import-job" class="input" required><option value="">请选择岗位</option></select><label for="import-name">候选人姓名（可选）</label><input id="import-name" class="input" maxlength="100" placeholder="不填则暂用文件名"><label for="import-resume">PDF 简历（最大 8 MB）</label><input id="import-resume" class="input" type="file" accept=".pdf,application/pdf" required><label class="screen-check"><input id="import-permission" type="checkbox" required><span>我确认企业已获得将此简历用于当前岗位招聘评估的授权。</span></label><p id="screen-import-error" class="screen-error screen-hidden" role="alert" tabindex="-1"></p><div class="screen-form-actions"><button class="btn btn-primary" type="submit" id="screen-import-submit">写入简历</button><button class="btn btn-ghost" type="button" id="screen-import-cancel">取消</button></div></form>'
+      + '<p id="screen-import-success" class="screen-success screen-hidden" role="status"></p><section class="screen-source-stats" aria-label="简历来源统计"><div class="card"><span>简历总数</span><strong id="source-total">0</strong></div><div class="card"><span>个人端投递</span><strong id="source-candidate">0</strong></div><div class="card"><span>企业端录入</span><strong id="source-hr">0</strong></div></section>'
+      + '<section class="screen-filters" aria-label="筛选申请"><label>岗位<select id="filter-job"><option value="">全部岗位</option></select></label><label>简历来源<select id="filter-source"><option value="">全部来源</option><option value="candidate_portal">个人投递</option><option value="hr_import">企业录入</option></select></label><label>申请状态<select id="filter-status"><option value="">全部状态</option><option value="hr_review">待 HR 审核</option><option value="ai_interview_invited">已邀 AI 辅助初面</option><option value="ai_interview_completed">AI 辅助初面完成</option><option value="failed">处理异常</option></select></label><label>审核重点<select id="filter-review"><option value="">全部</option><option value="manual">需要人工复核</option><option value="pending">待审核</option></select></label><label>录入时间<input id="filter-date" type="date"></label></section>'
+      + '<p id="screen-list-error" class="screen-error screen-hidden" role="alert"></p><div class="screen-table-wrap"><table class="screen-table"><thead><tr><th>候选人 / 岗位</th><th>来源</th><th>录入时间</th><th>申请进度</th><th>处理状态</th><th>匹配指标</th><th>初筛建议</th><th>HR 审核</th><th></th></tr></thead><tbody id="screen-rows"><tr><td colspan="9">正在读取申请…</td></tr></tbody></table></div>';
     const form = byId('screen-job-form');
+    const importForm = byId('screen-import-form');
     byId('screen-new-job').onclick = () => { form.classList.remove('screen-hidden'); byId('new-job-title').focus(); };
     byId('screen-job-cancel').onclick = () => form.classList.add('screen-hidden');
+    byId('screen-new-import').onclick = () => { importForm.classList.remove('screen-hidden'); byId('screen-import-success').classList.add('screen-hidden'); byId('import-job').focus(); };
+    byId('screen-import-cancel').onclick = () => importForm.classList.add('screen-hidden');
+    importForm.onsubmit = async (event) => {
+      event.preventDefault();
+      showError('screen-import-error','');
+      const file = byId('import-resume').files[0];
+      if (!file || !/\.pdf$/i.test(file.name) || file.size > 8 * 1024 * 1024) {
+        showError('screen-import-error','请选择不超过 8 MB 的 PDF 简历。');
+        byId('screen-import-error').focus();
+        return;
+      }
+      const button = byId('screen-import-submit'); button.disabled = true; button.textContent = '正在写入…';
+      const body = new FormData();
+      body.append('jobId',byId('import-job').value);
+      body.append('candidateName',byId('import-name').value.trim());
+      body.append('permissionConfirmed',String(byId('import-permission').checked));
+      body.append('resume',file);
+      try {
+        const result = await api('/api/hr/resumes/import',{method:'POST',body});
+        importForm.reset(); importForm.classList.add('screen-hidden');
+        const notice = byId('screen-import-success');
+        notice.innerHTML = '简历已写入，正在解析和初筛。<a href="screening.html?id=' + encodeURIComponent(result.application.id) + '">查看详情 →</a>';
+        notice.classList.remove('screen-hidden');
+        await loadList();
+      } catch (error) { showError('screen-import-error',error.message || '写入失败。'); byId('screen-import-error').focus(); }
+      finally { button.disabled = false; button.textContent = '写入简历'; }
+    };
     form.onsubmit = async (event) => {
       event.preventDefault();
       const button = byId('screen-job-submit'); button.disabled = true; button.textContent = '正在发布…'; showError('screen-job-error','');
@@ -120,14 +152,20 @@
       } catch (error) { showError('screen-job-error',error.message || '发布失败。'); }
       finally { button.disabled = false; button.textContent = '发布岗位'; }
     };
-    ['filter-job','filter-status','filter-review','filter-date'].forEach((id) => { byId(id).onchange = drawRows; });
+    ['filter-job','filter-source','filter-status','filter-review','filter-date'].forEach((id) => { byId(id).onchange = drawRows; });
     loadJobs(); loadList();
     setInterval(() => { if (document.visibilityState === 'visible' && byId('screen-rows')) loadList(); }, 15000);
   }
   async function loadJobs() {
     try {
-      const result = await api('/api/jobs',{},false);
+      const result = await api('/api/hr/jobs');
       jobs = Array.isArray(result.items) ? result.items : [];
+      const importJob = byId('import-job');
+      if (importJob) {
+        const selected = importJob.value;
+        importJob.innerHTML = '<option value="">请选择岗位</option>' + jobs.map((job) => '<option value="' + esc(job.id) + '">' + esc(job.title) + '</option>').join('');
+        importJob.value = selected;
+      }
       const select = byId('filter-job');
       if (select) {
         const value = select.value;
@@ -141,6 +179,10 @@
     try {
       const result = await api('/api/hr/applications');
       entries = Array.isArray(result.items) ? result.items : [];
+      sourceCounts = result.counts || {total:0,candidatePortal:0,hrImport:0};
+      byId('source-total').textContent = sourceCounts.total || 0;
+      byId('source-candidate').textContent = sourceCounts.candidatePortal || 0;
+      byId('source-hr').textContent = sourceCounts.hrImport || 0;
       const select = byId('filter-job');
       if (select) {
         const value = select.value;
@@ -154,9 +196,9 @@
   function drawRows() {
     const body = byId('screen-rows');
     if (!body) return;
-    const job = byId('filter-job').value, status = byId('filter-status').value, review = byId('filter-review').value, date = byId('filter-date').value;
-    const shown = entries.filter((item) => (!job || item.jobTitle === job) && (!status || item.status === status) && (!date || dateISO(item.createdAt) === date) && (!review || (review === 'manual' ? ['manual_review','insufficient_evidence'].includes(item.recommendation || reportOf(item)?.screeningRecommendation) || item.reviewStatus === 'verify' : !item.reviewStatus)));
-    body.innerHTML = shown.length ? shown.map((item) => '<tr><td><strong>' + esc(item.candidateName || '候选人') + '</strong><small>' + esc(item.jobTitle || '目标岗位') + '</small></td><td>' + esc(dateLabel(item.createdAt)) + '</td><td><span class="screen-state">' + esc(statusLabel(item.status)) + '</span></td><td>' + esc(processLabel(item.resumeStatus)) + ' / ' + esc(processLabel(item.screeningStatus)) + '</td><td>' + esc(scoreOf(item)) + '</td><td>' + esc(recommendationLabel(item.recommendation || reportOf(item)?.screeningRecommendation)) + '</td><td>' + esc(reviewStatus(item.review || item.reviewStatus)) + '</td><td><a class="screen-detail-link" href="screening.html?id=' + encodeURIComponent(item.id) + '">查看详情 →</a></td></tr>').join('') : '<tr><td colspan="8" class="screen-no-rows">没有符合条件的申请。</td></tr>';
+    const job = byId('filter-job').value, source = byId('filter-source').value, status = byId('filter-status').value, review = byId('filter-review').value, date = byId('filter-date').value;
+    const shown = entries.filter((item) => (!job || item.jobTitle === job) && (!source || item.source === source) && (!status || item.status === status) && (!date || dateISO(item.createdAt) === date) && (!review || (review === 'manual' ? ['manual_review','insufficient_evidence'].includes(item.recommendation || reportOf(item)?.screeningRecommendation) || item.reviewStatus === 'verify' : !item.reviewStatus)));
+    body.innerHTML = shown.length ? shown.map((item) => '<tr><td><strong>' + esc(item.candidateName || '候选人') + '</strong><small>' + esc(item.jobTitle || '目标岗位') + '</small></td><td><span class="screen-state">' + sourceLabel(item.source) + '</span></td><td>' + esc(dateLabel(item.createdAt)) + '</td><td><span class="screen-state">' + esc(statusLabel(item.status)) + '</span></td><td>' + esc(processLabel(item.resumeStatus)) + ' / ' + esc(processLabel(item.screeningStatus)) + '</td><td>' + esc(scoreOf(item)) + '</td><td>' + esc(recommendationLabel(item.recommendation || reportOf(item)?.screeningRecommendation)) + '</td><td>' + esc(reviewStatus(item.review || item.reviewStatus)) + '</td><td><a class="screen-detail-link" href="screening.html?id=' + encodeURIComponent(item.id) + '">查看详情 →</a></td></tr>').join('') : '<tr><td colspan="9" class="screen-no-rows">没有符合条件的申请。</td></tr>';
   }
 
   async function renderDetail(id) {
@@ -208,9 +250,9 @@
     const review = item.review || {};
     const interviewPath = typeof item.invitation?.interviewPath === 'string' && item.invitation.interviewPath.startsWith('/classic/?room=') ? item.invitation.interviewPath : '';
     const title = esc(item.jobTitle || '目标岗位');
-    byId('screen-detail').innerHTML = '<div class="screen-detail-heading"><div><span class="eyebrow">候选人 · ' + esc(statusLabel(item.status)) + '</span><h1>' + esc(item.candidateName || '候选人') + '</h1><p>' + title + ' · 投递于 ' + esc(dateLabel(item.createdAt)) + '</p></div><div class="screen-heading-actions"><button id="screen-download" type="button" class="btn btn-ghost">查看原始简历</button>' + (interviewPath ? '<a class="btn btn-primary" href="' + esc(interviewPath) + '">人工面试房间（AI 辅助）</a>' : '') + '</div></div>'
-      + '<div class="screen-detail-grid"><div class="screen-detail-column"><section class="card screen-panel"><div class="screen-panel-heading"><h2>候选人资料</h2><span>' + esc(processLabel(item.resumeStatus)) + '</span></div><div class="screen-resume-meta"><span>姓名</span><strong>' + esc(resume.name || item.candidateName || '未提取') + '</strong><span>联系方式</span><strong>' + esc(item.candidateEmail || resume.contact?.email || '未提供') + '</strong></div><p class="screen-panel-lead">以下分析引用简历中的具体内容；原始文件可在页面顶部下载核对。</p><details><summary>查看解析后的简历结构</summary>' + (structuredResumeHtml(resume) || '<p class="screen-empty-copy">尚无结构化简历内容。</p>') + '</details></section>'
-      + '<section class="card screen-panel"><h2>HR 人工审核</h2><p class="screen-panel-lead">审核意见用于记录企业内部的核验要点与决策依据；AI 结论只供参考，最终由 HR 判断。</p><p class="screen-review-current">当前状态：' + esc(reviewStatus(review)) + (review.notes ? ' · ' + esc(review.notes) : '') + '</p><label for="screen-review-notes">内部审核意见</label><textarea id="screen-review-notes" class="input" rows="4" maxlength="2000" placeholder="记录待核实的经历、追问结果及处理依据">' + esc(review.notes || '') + '</textarea><p id="screen-review-error" class="screen-error screen-hidden" role="alert"></p><div class="screen-review-actions"><button type="button" data-decision="invite" class="btn btn-primary">邀请 AI 辅助初面</button><button type="button" data-decision="verify" class="btn btn-ghost">进一步核验</button><button type="button" data-decision="hold" class="btn btn-ghost">暂缓申请</button></div></section></div>'
+    byId('screen-detail').innerHTML = '<div class="screen-detail-heading"><div><span class="eyebrow">候选人 · ' + esc(statusLabel(item.status)) + '</span><h1>' + esc(item.candidateName || '候选人') + '</h1><p>' + title + ' · ' + sourceLabel(item.source) + '于 ' + esc(dateLabel(item.createdAt)) + '</p></div><div class="screen-heading-actions"><button id="screen-download" type="button" class="btn btn-ghost">查看原始简历</button>' + (interviewPath ? '<a class="btn btn-primary" href="' + esc(interviewPath) + '">人工面试房间（AI 辅助）</a>' : '') + '</div></div>'
+      + '<div class="screen-detail-grid"><div class="screen-detail-column"><section class="card screen-panel"><div class="screen-panel-heading"><h2>候选人资料</h2><span>' + esc(processLabel(item.resumeStatus)) + '</span></div><div class="screen-resume-meta"><span>来源</span><strong>' + sourceLabel(item.source) + '</strong><span>姓名</span><strong>' + esc(resume.name || item.candidateName || '未提取') + '</strong><span>联系方式</span><strong>' + esc(item.candidateEmail || resume.contact?.email || '未提供') + '</strong>' + (item.uploadedBy ? '<span>企业录入人</span><strong>' + esc(item.uploadedBy) + '</strong>' : '') + '</div><p class="screen-panel-lead">以下分析引用简历中的具体内容；原始文件可在页面顶部下载核对。</p><details><summary>查看解析后的简历结构</summary>' + (structuredResumeHtml(resume) || '<p class="screen-empty-copy">尚无结构化简历内容。</p>') + '</details></section>'
+      + '<section class="card screen-panel"><h2>HR 人工审核</h2><p class="screen-panel-lead">审核意见用于记录企业内部的核验要点与决策依据；AI 结论只供参考，最终由 HR 判断。</p>' + (item.source === 'hr_import' ? '<p class="screen-import-note">企业录入简历尚未关联候选人账号，可先审核；线上初面邀请暂不可用。</p>' : '') + '<p class="screen-review-current">当前状态：' + esc(reviewStatus(review)) + (review.notes ? ' · ' + esc(review.notes) : '') + '</p><label for="screen-review-notes">内部审核意见</label><textarea id="screen-review-notes" class="input" rows="4" maxlength="2000" placeholder="记录待核实的经历、追问结果及处理依据">' + esc(review.notes || '') + '</textarea><p id="screen-review-error" class="screen-error screen-hidden" role="alert"></p><div class="screen-review-actions">' + (item.source === 'hr_import' ? '' : '<button type="button" data-decision="invite" class="btn btn-primary">邀请 AI 辅助初面</button>') + '<button type="button" data-decision="verify" class="btn btn-ghost">进一步核验</button><button type="button" data-decision="hold" class="btn btn-ghost">暂缓申请</button></div></section></div>'
       + '<div class="screen-detail-column"><section class="card screen-panel"><div class="screen-panel-heading"><h2>AI 初筛报告</h2><span>' + esc(processLabel(item.screeningStatus)) + '</span></div>'
       + (report ? '<p class="screen-model-note">分析模型：' + esc(item.screeningMeta?.model || 'DeepSeek') + '</p><p class="screen-panel-lead">' + esc(report.candidateSummary || '报告未提供候选人概览。') + '</p><div class="screen-decision"><span>岗位匹配指标</span><strong>' + esc(scoreOf(item)) + '</strong><small>辅助指标；缺少证据时不评分</small></div><h3>经历内容与待核实点</h3>' + substanceHtml(report.substanceSignals) + '<h3>匹配的要求</h3>' + listStrings(match.matchedRequirements,'暂无有证据支持的匹配项。') + '<h3>岗位能力缺口</h3>' + listStrings(match.missingRequirements,'未发现明确缺口，或岗位资料不足。') + '<h3>匹配依据</h3>' + evidenceHtml(match.evidence) + '<h3>有证据的优势</h3>' + listStrings(report.strengths,'暂无可说明的优势。') + '<h3>需要核实的声明</h3>' + claimHtml(report.resumeClaims) + '<h3>其他核验重点</h3>' + listStrings(report.areasToVerify,'暂无补充事项。') + '<h3>面试问题</h3>' + listStrings(report.interviewQuestions,'初筛完成后生成。') + '<h3>初筛建议</h3><div class="screen-recommendation"><strong>' + esc(recommendationLabel(recommendation)) + '</strong>' + listStrings(report.recommendationReasons,'请结合完整报告人工判断。') + '</div><h3>外部证据</h3>' + evidenceHtml(report.externalEvidence) + '<h3>分析限制</h3>' + listStrings(report.limitations,'请结合原始简历人工核验。') : '<div class="screen-pending"><p>' + (item.screeningStatus === 'failed' ? '初筛处理失败，可重新运行。' : '初筛处理中，完成后自动显示分析。') + '</p>' + (item.screeningError ? '<small>' + esc(item.screeningError) + '</small>' : '') + (item.screeningStatus === 'failed' ? '<button type="button" id="screen-retry-screening" class="btn btn-ghost btn-sm">重新运行初筛</button>' : '') + '</div>')
       + '</section></div></div>';

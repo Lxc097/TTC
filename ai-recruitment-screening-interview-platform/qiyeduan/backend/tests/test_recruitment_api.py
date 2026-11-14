@@ -204,6 +204,51 @@ class RecruitmentApiTests(unittest.TestCase):
         self.assertEqual(safe.status_code, 200)
         self.assertNotIn("screeningError", safe.json())
 
+    def test_hr_pdf_import_shares_screening_and_counts_without_candidate_access(self) -> None:
+        hr = self.register("HR", "hr@example.test", "hr", "Company One")
+        other_hr = self.register("Other HR", "other-hr@example.test", "hr", "Company Two")
+        candidate = self.register("Candidate", "candidate@example.test")
+        job = self.create_job(hr)
+        self.assertEqual(self.submit(candidate, job["id"]).status_code, 202)
+        path = "/api/hr/resumes/import"
+        fields = {"jobId": job["id"], "candidateName": "企业录入候选人",
+                  "permissionConfirmed": "true"}
+        imported = self.client.post(path, headers=self.auth(hr), data=fields,
+            files={"resume": ("imported.pdf", PDF, "application/pdf")})
+        self.assertEqual(imported.status_code, 202, imported.text)
+        imported_id = imported.json()["application"]["id"]
+        self.assertEqual(imported.json()["application"]["source"], "hr_import")
+        detail = self.wait_for_screening(hr, imported_id, "completed")
+        self.assertEqual(detail["uploadedBy"], "HR")
+        self.assertNotIn("hr-import-", detail["candidateEmail"] or "")
+        self.assertEqual(self.client.get(f"/api/hr/applications/{imported_id}/resume",
+                         headers=self.auth(hr)).content, PDF)
+        listing = self.client.get("/api/hr/applications", headers=self.auth(hr)).json()
+        self.assertEqual(listing["counts"], {"total": 2, "candidatePortal": 1, "hrImport": 1})
+        self.assertEqual({item["source"] for item in listing["items"]},
+                         {"candidate_portal", "hr_import"})
+        self.assertEqual(len(self.client.get("/api/applications/my",
+                         headers=self.auth(candidate)).json()["items"]), 1)
+        self.assertEqual(self.client.get(f"/api/applications/{imported_id}",
+                         headers=self.auth(candidate)).status_code, 404)
+        self.assertEqual(self.client.get(f"/api/hr/applications/{imported_id}",
+                         headers=self.auth(other_hr)).status_code, 404)
+        self.assertEqual(self.client.get("/api/hr/applications",
+                         headers=self.auth(other_hr)).json()["counts"]["total"], 0)
+        self.assertEqual(self.client.post(f"/api/hr/applications/{imported_id}/review",
+                         headers=self.auth(hr), json={"decision": "invite", "notes": ""}).status_code, 409)
+        self.assertEqual(self.client.post(f"/api/hr/applications/{imported_id}/review",
+                         headers=self.auth(hr), json={"decision": "verify", "notes": "核验工作经历"}).status_code, 200)
+        self.assertEqual(self.client.post(path, headers=self.auth(hr),
+                         data={**fields, "permissionConfirmed": "false"},
+                         files={"resume": ("x.pdf", PDF, "application/pdf")}).status_code, 422)
+        self.assertEqual(self.client.post(path, headers=self.auth(hr), data=fields,
+                         files={"resume": ("x.pdf", b"not a PDF", "application/pdf")}).status_code, 422)
+        self.assertEqual(self.client.post(path, headers=self.auth(other_hr), data=fields,
+                         files={"resume": ("x.pdf", PDF, "application/pdf")}).status_code, 404)
+        self.assertEqual(self.client.post(path, headers=self.auth(candidate), data=fields,
+                         files={"resume": ("x.pdf", PDF, "application/pdf")}).status_code, 403)
+
 
 if __name__ == "__main__":
     unittest.main()
