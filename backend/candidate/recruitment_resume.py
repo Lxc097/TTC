@@ -87,6 +87,7 @@ _SECTIONS = {
     "education": re.compile(r"^(教育(背景|经历)?|学历|education|academic background)\b", re.I),
     "workExperience": re.compile(r"^(工作(经历|经验)?|职业经历|实习经历|work experience|employment|professional experience)\b", re.I),
     "projects": re.compile(r"^(项目(经历|经验)?|项目实践|projects?|project experience)\b", re.I),
+    "competitions": re.compile(r"^(竞赛(经历|获奖|成果)?|比赛(经历|获奖)?|参赛经历|competitions?|contests?)\b", re.I),
     "skills": re.compile(r"^(技能(清单|专长)?|专业技能|技术栈|skills?|technical skills|expertise)\b", re.I),
     "certifications": re.compile(r"^(证书|资格证|certifications?|licenses?)\b", re.I),
     "achievements": re.compile(r"^(获奖|荣誉|成就|achievements?|awards?)\b", re.I),
@@ -107,7 +108,7 @@ def structure_resume(text: str) -> dict:
         "name": None,
         "contact": {"email": email.group(0) if email else None,
                     "phone": phone.group(0).strip() if phone else None},
-        "education": [], "workExperience": [], "projects": [],
+        "education": [], "workExperience": [], "projects": [], "competitions": [],
         "skills": [], "certifications": [], "achievements": [],
         "portfolioLinks": links, "rawText": text,
     }
@@ -128,7 +129,7 @@ def structure_resume(text: str) -> dict:
                 section_lines[heading].append(tail)
         elif current:
             section_lines[current].append(line)
-    for key in ("education", "workExperience", "projects"):
+    for key in ("education", "workExperience", "projects", "competitions"):
         result[key] = [{"text": item[:1_000]} for item in section_lines[key][:25]]
     for key in ("skills", "certifications", "achievements"):
         result[key] = [item[:300] for item in section_lines[key][:40]]

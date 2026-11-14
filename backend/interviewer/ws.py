@@ -42,6 +42,18 @@ SEGMENT_MODE = bool(getattr(PROVIDER, "wants_segment", False))
 SEGMENT_FRAMES = max(10, int(float(os.getenv("VISION_SEGMENT_SECONDS", "12"))
                             * config.FRAME_FPS))
 
+
+def _archive_report(application_id: str, session_id: str, report: dict) -> None:
+    """把面试质量报告归档到招聘库，供企业端事后回看。
+
+    best-effort：归档失败（库忙、磁盘满、迁移未跑）绝不能影响面试结束与报告投递。
+    """
+    try:
+        from candidate.recruitment_store import archive_interview_report
+        archive_interview_report(application_id, session_id, report)
+    except Exception:
+        pass
+
 # 每个房间一个 Hub（连接集合 + 单帧槽位 + 后台 worker）
 HUBS: dict[str, "RoomHub"] = {}
 
@@ -563,6 +575,8 @@ class RoomHub:
             mark_interview_completed(self.room.application_id)
         if session.report is not None:
             # 幂等：重复点结束就把已有报告再发一遍，不重复生成
+            if self.room.application_id is not None:
+                _archive_report(self.room.application_id, session.id, session.report)
             await self.send("interviewer", {
                 "type": "report_ready", "session_id": session.id,
                 "report": session.report})
@@ -572,6 +586,10 @@ class RoomHub:
             return
 
         base = report_mod.build_report(session)
+        if self.room.application_id is not None:
+            # 面试间数据只在内存里，会话结束就把报告归档到招聘库：
+            # 企业端「真人面试结果」事后才能回看双确认与追问点。
+            _archive_report(self.room.application_id, session.id, base)
         await self.send("interviewer", {
             "type": "report_ready",
             "session_id": session.id,

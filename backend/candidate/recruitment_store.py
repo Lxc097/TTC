@@ -25,6 +25,27 @@ def data_dir() -> Path:
     return path
 
 
+def _days_env(name: str, default: int) -> int:
+    """邀请有效期（天）。和 RECRUITMENT_RETENTION_DAYS 一样在读取时解析。"""
+    try:
+        return max(1, min(365, int(os.getenv(name, str(default)))))
+    except ValueError:
+        return default
+
+
+def _invite_seconds(name: str, default: int) -> float:
+    return _days_env(name, default) * 86400.0
+
+
+def _ensure_columns(connection: sqlite3.Connection, table: str,
+                    definitions: tuple[tuple[str, str], ...]) -> None:
+    """Additive migration: only ever add missing columns, never rebuild a table."""
+    columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+    for name, definition in definitions:
+        if name not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
 @contextmanager
 def db() -> Iterator[sqlite3.Connection]:
     connection = sqlite3.connect(data_dir() / "recruitment.sqlite3", timeout=15)
@@ -112,7 +133,25 @@ def init_db() -> None:
           question_id TEXT NOT NULL, prompt TEXT NOT NULL, answer TEXT NOT NULL,
           created_at REAL NOT NULL, PRIMARY KEY(attempt_id, question_id)
         );
+        -- 真人面试：企业端安排、候选人接受、面试官出结论。一申请一条记录。
+        CREATE TABLE IF NOT EXISTS human_interviews (
+          application_id TEXT PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
+          id TEXT NOT NULL, status TEXT NOT NULL,
+          scheduled_at REAL, duration_minutes INTEGER NOT NULL DEFAULT 45,
+          interviewer_name TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'video',
+          location TEXT, room_code TEXT, result TEXT, notes TEXT NOT NULL DEFAULT '',
+          result_sent INTEGER NOT NULL DEFAULT 0, sent_at REAL, expires_at REAL,
+          accepted_at REAL, send_count INTEGER NOT NULL DEFAULT 1, last_sent_at REAL,
+          created_at REAL NOT NULL, updated_at REAL NOT NULL
+        );
+        -- 双人面试间的报告只活在内存里，重启即失。会话结束时归档一份，
+        -- 企业端「真人面试结果」才有可回看的佐证（双确认、追问点）。
+        CREATE TABLE IF NOT EXISTS interview_reports (
+          application_id TEXT PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
+          session_id TEXT NOT NULL, report_json TEXT NOT NULL, archived_at REAL NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS applications_job_idx ON applications(job_id, created_at);
+        CREATE INDEX IF NOT EXISTS human_interviews_schedule_idx ON human_interviews(status, scheduled_at);
         CREATE INDEX IF NOT EXISTS applications_queue_idx ON applications(screening_status, created_at);
         """)
         application_columns = {row[1] for row in connection.execute("PRAGMA table_info(applications)")}
@@ -134,6 +173,24 @@ def init_db() -> None:
         connection.execute("""UPDATE formal_interviews SET analysis_status='queued'
           WHERE status='completed' AND analysis_json IS NULL
           AND analysis_status IN ('pending','processing')""")
+        _ensure_columns(connection, "jobs", (
+            ("screening_criteria", "TEXT NOT NULL DEFAULT ''"),
+            ("criteria_updated_at", "REAL"),
+        ))
+        _ensure_columns(connection, "invitations", (
+            ("sent_at", "REAL"),
+            ("expires_at", "REAL"),
+            ("accepted_at", "REAL"),
+            ("send_count", "INTEGER NOT NULL DEFAULT 1"),
+            ("last_sent_at", "REAL"),
+            ("result_sent", "INTEGER NOT NULL DEFAULT 0"),
+        ))
+        # 历史邀请没有有效期：按 created_at 补一份，列表才能直接显示「已过期」。
+        connection.execute("""UPDATE invitations SET
+          sent_at=COALESCE(sent_at, created_at),
+          last_sent_at=COALESCE(last_sent_at, sent_at, created_at),
+          expires_at=COALESCE(expires_at, created_at + ?)""",
+          (_invite_seconds("AI_INVITE_DAYS", 7),))
         # A worker interrupted by restart can safely retry; reports are upserted.
         connection.execute("""UPDATE applications SET screening_status='queued',
           resume_status=CASE WHEN resume_status='parsing' THEN 'queued' ELSE resume_status END,
@@ -247,25 +304,49 @@ def get_user_for_token(token: str) -> dict | None:
     return _user(row) if row else None
 
 
-def create_job(company_id: str, title: str, description: str) -> dict:
+def create_job(company_id: str, title: str, description: str,
+               criteria: str = "") -> dict:
     job = {"id": _id(), "companyId": company_id, "title": title,
-           "description": description, "createdAt": time.time()}
+           "description": description, "screeningCriteria": criteria,
+           "createdAt": time.time()}
     with db() as connection:
-        connection.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?)",
-                           (job["id"], company_id, title, description, 1, job["createdAt"]))
+        connection.execute("""INSERT INTO jobs
+          (id,company_id,title,description,published,created_at,screening_criteria)
+          VALUES (?,?,?,?,?,?,?)""",
+          (job["id"], company_id, title, description, 1, job["createdAt"], criteria))
     return job
 
 
-def list_jobs(company_id: str | None = None) -> list[dict]:
+def list_jobs(company_id: str | None = None, include_criteria: bool = False) -> list[dict]:
     where = "AND jobs.company_id=?" if company_id else ""
     args = (company_id,) if company_id else ()
     with db() as connection:
         rows = connection.execute(f"""SELECT jobs.*, companies.name AS company_name
           FROM jobs JOIN companies ON companies.id=jobs.company_id
           WHERE jobs.published=1 {where} ORDER BY jobs.created_at DESC""", args).fetchall()
-    return [{"id": r["id"], "title": r["title"], "description": r["description"],
-             "companyName": r["company_name"], "companyId": r["company_id"],
-             "createdAt": r["created_at"]} for r in rows]
+    result = [{"id": r["id"], "title": r["title"], "description": r["description"],
+               "companyName": r["company_name"], "companyId": r["company_id"],
+               "createdAt": r["created_at"]} for r in rows]
+    if include_criteria:
+        # 内部初筛标准只给企业端；公开的 /api/jobs 绝不能带出去。
+        by_id = {r["id"]: r for r in rows}
+        for item in result:
+            row = by_id[item["id"]]
+            item["screeningCriteria"] = row["screening_criteria"] or ""
+            item["criteriaUpdatedAt"] = row["criteria_updated_at"]
+    return result
+
+
+def save_job_criteria(job_id: str, company_id: str, criteria: str) -> dict | None:
+    now = time.time()
+    with db() as connection:
+        job = connection.execute("SELECT id FROM jobs WHERE id=? AND company_id=?",
+                                 (job_id, company_id)).fetchone()
+        if not job:
+            return None
+        connection.execute("""UPDATE jobs SET screening_criteria=?, criteria_updated_at=?
+          WHERE id=?""", (criteria, now, job_id))
+    return {"jobId": job_id, "screeningCriteria": criteria, "updatedAt": now}
 
 
 def get_job(job_id: str) -> dict | None:
@@ -333,13 +414,26 @@ def resume_source_counts(company_id: str) -> dict:
 def _application_query(where: str, args: tuple) -> list[dict]:
     with db() as connection:
         rows = connection.execute(f"""SELECT a.*, j.title AS job_title,
-          j.description AS job_description, j.company_id, c.name AS company_name,
+          j.description AS job_description, j.company_id,
+          j.screening_criteria AS job_criteria, j.criteria_updated_at AS job_criteria_updated_at,
+          c.name AS company_name,
           u.name AS candidate_name, u.email AS candidate_email,
           uploader.name AS uploaded_by_name,
           r.original_name, r.content_type, r.file_path, r.raw_text, r.parsed_json, r.error AS resume_error,
           s.report_json, s.model, s.prompt_version, s.attempts,
           s.prompt_tokens, s.completion_tokens, s.error AS screening_error,
           v.id AS invitation_id, v.room_code, v.status AS invitation_status,
+          v.sent_at AS invitation_sent_at, v.expires_at AS invitation_expires_at,
+          v.accepted_at AS invitation_accepted_at, v.send_count AS invitation_send_count,
+          v.last_sent_at AS invitation_last_sent_at, v.result_sent AS invitation_result_sent,
+          hi.id AS human_id, hi.status AS human_status, hi.scheduled_at AS human_scheduled_at,
+          hi.duration_minutes AS human_duration_minutes,
+          hi.interviewer_name AS human_interviewer_name, hi.mode AS human_mode,
+          hi.location AS human_location, hi.room_code AS human_room_code,
+          hi.result AS human_result, hi.notes AS human_notes,
+          hi.result_sent AS human_result_sent, hi.sent_at AS human_sent_at,
+          hi.expires_at AS human_expires_at, hi.accepted_at AS human_accepted_at,
+          hi.send_count AS human_send_count, hi.last_sent_at AS human_last_sent_at,
           rev.decision AS review_decision, rev.notes AS review_notes, rev.updated_at AS reviewed_at
           FROM applications a JOIN jobs j ON j.id=a.job_id
           JOIN companies c ON c.id=j.company_id JOIN users u ON u.id=a.candidate_id
@@ -347,6 +441,7 @@ def _application_query(where: str, args: tuple) -> list[dict]:
           JOIN resumes r ON r.application_id=a.id
           JOIN screenings s ON s.application_id=a.id
           LEFT JOIN invitations v ON v.application_id=a.id
+          LEFT JOIN human_interviews hi ON hi.application_id=a.id
           LEFT JOIN reviews rev ON rev.application_id=a.id
           WHERE {where} ORDER BY a.created_at DESC""", args).fetchall()
     return [dict(row) for row in rows]
@@ -363,11 +458,20 @@ def _candidate_query(where: str, args: tuple) -> list[dict]:
         rows = connection.execute(f"""SELECT a.id, a.job_id, a.candidate_id,
           a.status, a.resume_status, a.screening_status, a.created_at, a.updated_at,
           j.title AS job_title, c.name AS company_name, r.error AS resume_error,
-          v.id AS invitation_id, v.status AS invitation_status
+          v.id AS invitation_id, v.status AS invitation_status,
+          v.sent_at AS invitation_sent_at, v.expires_at AS invitation_expires_at,
+          v.accepted_at AS invitation_accepted_at, v.result_sent AS invitation_result_sent,
+          hi.status AS human_status, hi.scheduled_at AS human_scheduled_at,
+          hi.duration_minutes AS human_duration_minutes,
+          hi.interviewer_name AS human_interviewer_name, hi.mode AS human_mode,
+          hi.location AS human_location, hi.room_code AS human_room_code,
+          hi.result AS human_result, hi.result_sent AS human_result_sent,
+          hi.expires_at AS human_expires_at, hi.accepted_at AS human_accepted_at
           FROM applications a JOIN jobs j ON j.id=a.job_id
           JOIN companies c ON c.id=j.company_id
           JOIN resumes r ON r.application_id=a.id
           LEFT JOIN invitations v ON v.application_id=a.id
+          LEFT JOIN human_interviews hi ON hi.application_id=a.id
           WHERE a.source='candidate_portal' AND ({where}) ORDER BY a.created_at DESC""", args).fetchall()
     return [dict(row) for row in rows]
 
@@ -423,7 +527,7 @@ def claim_next_application() -> str | None:
         if not row:
             return None
         connection.execute("""UPDATE applications SET status=CASE WHEN status IN
-          ('ai_interview_invited','ai_interview_in_progress','ai_interview_completed','hr_interview_invited')
+          ('ai_interview_invited','ai_interview_in_progress','ai_interview_completed','hr_interview_invited','closed')
           THEN status ELSE 'parsing' END, resume_status='parsing',
           screening_status='parsing', updated_at=? WHERE id=?""", (time.time(), row["id"]))
         return row["id"]
@@ -434,7 +538,7 @@ def save_parsed_resume(app_id: str, raw_text: str, parsed: dict) -> None:
         connection.execute("UPDATE resumes SET raw_text=?, parsed_json=?, error=NULL WHERE application_id=?",
                            (raw_text, json.dumps(parsed, ensure_ascii=False), app_id))
         connection.execute("""UPDATE applications SET status=CASE WHEN status IN
-          ('ai_interview_invited','ai_interview_in_progress','ai_interview_completed','hr_interview_invited')
+          ('ai_interview_invited','ai_interview_in_progress','ai_interview_completed','hr_interview_invited','closed')
           THEN status ELSE 'screening' END, resume_status='parsed',
           screening_status='screening', updated_at=? WHERE id=?""", (time.time(), app_id))
 
@@ -566,7 +670,7 @@ def save_screening(app_id: str, report: dict, model: str, version: str,
           WHERE application_id=?""", (json.dumps(report, ensure_ascii=False), model, version,
                                     attempts, prompt_tokens, completion_tokens, time.time(), app_id))
         connection.execute("""UPDATE applications SET status=CASE WHEN status IN
-          ('ai_interview_invited','ai_interview_in_progress','ai_interview_completed','hr_interview_invited')
+          ('ai_interview_invited','ai_interview_in_progress','ai_interview_completed','hr_interview_invited','closed')
           THEN status ELSE 'hr_review' END, screening_status='completed',
           updated_at=? WHERE id=?""", (time.time(), app_id))
 
@@ -577,7 +681,7 @@ def save_screening_failure(app_id: str, error: str, model: str, version: str,
         connection.execute("""UPDATE screenings SET model=?, prompt_version=?, attempts=?, error=?
           WHERE application_id=?""", (model, version, attempts, error, app_id))
         connection.execute("""UPDATE applications SET status=CASE WHEN status IN
-          ('ai_interview_invited','ai_interview_in_progress','ai_interview_completed','hr_interview_invited')
+          ('ai_interview_invited','ai_interview_in_progress','ai_interview_completed','hr_interview_invited','closed')
           THEN status ELSE 'hr_review' END, screening_status='failed',
           updated_at=? WHERE id=?""", (time.time(), app_id))
 
@@ -607,12 +711,47 @@ def upsert_review(app_id: str, reviewer_id: str, decision: str, notes: str,
 
 
 def ensure_invitation(app_id: str) -> dict:
+    """一申请一条 AI 初面邀请；重复调用返回同一条（历史行为）。"""
     now = time.time()
     with db() as connection:
-        connection.execute("""INSERT OR IGNORE INTO invitations VALUES (?,?,?,?,?,?)""",
-                           (_id(), app_id, None, "invited", now, now))
+        connection.execute("""INSERT OR IGNORE INTO invitations
+          (id,application_id,room_code,status,created_at,updated_at,
+           sent_at,expires_at,send_count,last_sent_at,result_sent)
+          VALUES (?,?,NULL,'invited',?,?,?,?,1,?,0)""",
+          (_id(), app_id, now, now, now, now + _invite_seconds("AI_INVITE_DAYS", 7), now))
         row = connection.execute("SELECT * FROM invitations WHERE application_id=?", (app_id,)).fetchone()
     return dict(row)
+
+
+def resend_invitation(app_id: str, days: int | None = None) -> dict | None:
+    """重发 AI 初面邀请：顺延有效期并计数，不产生第二条记录。"""
+    now = time.time()
+    with db() as connection:
+        row = connection.execute("SELECT * FROM invitations WHERE application_id=?",
+                                 (app_id,)).fetchone()
+        if not row or row["status"] == "completed":
+            return None
+        base = max(now, float(row["expires_at"] or now))
+        connection.execute("""UPDATE invitations SET sent_at=?, last_sent_at=?,
+          expires_at=?, send_count=COALESCE(send_count,1)+1, updated_at=?
+          WHERE application_id=?""",
+          (now, now, base + (days or _days_env("AI_INVITE_DAYS", 7)) * 86400.0, now, app_id))
+        row = connection.execute("SELECT * FROM invitations WHERE application_id=?",
+                                 (app_id,)).fetchone()
+    return dict(row)
+
+
+def set_ai_result_sent(app_id: str, visible: bool) -> bool:
+    with db() as connection:
+        cursor = connection.execute("""UPDATE invitations SET result_sent=?, updated_at=?
+          WHERE application_id=?""", (1 if visible else 0, time.time(), app_id))
+    return cursor.rowcount > 0
+
+
+def set_application_status(app_id: str, status: str) -> None:
+    with db() as connection:
+        connection.execute("UPDATE applications SET status=?, updated_at=? WHERE id=?",
+                           (status, time.time(), app_id))
 
 
 def set_invitation_room(app_id: str, room_code: str) -> None:
@@ -622,19 +761,191 @@ def set_invitation_room(app_id: str, room_code: str) -> None:
 
 
 def mark_interview_in_progress(app_id: str) -> None:
+    now = time.time()
     with db() as connection:
-        connection.execute("UPDATE invitations SET status='in_progress',updated_at=? WHERE application_id=? AND status!='completed'",
-                           (time.time(), app_id))
+        connection.execute("""UPDATE invitations SET status='in_progress',updated_at=?,
+          accepted_at=COALESCE(accepted_at,?) WHERE application_id=? AND status!='completed'""",
+          (now, now, app_id))
         connection.execute("""UPDATE applications SET status='ai_interview_in_progress',updated_at=?
-          WHERE id=? AND status='ai_interview_invited'""", (time.time(), app_id))
+          WHERE id=? AND status='ai_interview_invited'""", (now, app_id))
 
 
 def mark_interview_completed(app_id: str) -> None:
+    """AI 初面房间结束后收口。真人面试阶段与已结束的申请不回退。"""
     with db() as connection:
+        row = connection.execute("SELECT status FROM applications WHERE id=?",
+                                 (app_id,)).fetchone()
+        if not row or row["status"] in ("hr_interview_invited", "closed"):
+            return
+        now = time.time()
         connection.execute("UPDATE invitations SET status='completed',updated_at=? WHERE application_id=?",
-                           (time.time(), app_id))
+                           (now, app_id))
         connection.execute("UPDATE applications SET status='ai_interview_completed',updated_at=? WHERE id=?",
-                           (time.time(), app_id))
+                           (now, app_id))
+
+
+# ---------- 真人面试 ----------
+def upsert_human_interview(app_id: str, *, scheduled_at: float,
+                           duration_minutes: int, interviewer_name: str,
+                           mode: str, location: str | None = None,
+                           room_code: str | None = None, days: int | None = None) -> dict:
+    """安排/改期真人面试。已有记录就地更新，不新建第二行。"""
+    now = time.time()
+    expires = max(now, scheduled_at) + (days or _days_env("HUMAN_INVITE_DAYS", 3)) * 86400.0
+    with db() as connection:
+        row = connection.execute("SELECT id FROM human_interviews WHERE application_id=?",
+                                 (app_id,)).fetchone()
+        if row:
+            connection.execute("""UPDATE human_interviews SET status='invited',
+              scheduled_at=?, duration_minutes=?, interviewer_name=?, mode=?, location=?,
+              room_code=COALESCE(?,room_code), sent_at=?, last_sent_at=?, expires_at=?,
+              accepted_at=NULL, send_count=COALESCE(send_count,1)+1, updated_at=?
+              WHERE application_id=?""",
+              (scheduled_at, duration_minutes, interviewer_name, mode, location,
+               room_code, now, now, expires, now, app_id))
+        else:
+            connection.execute("""INSERT INTO human_interviews
+              (application_id,id,status,scheduled_at,duration_minutes,interviewer_name,
+               mode,location,room_code,sent_at,expires_at,send_count,last_sent_at,
+               created_at,updated_at)
+              VALUES (?,?,'invited',?,?,?,?,?,?,?,?,1,?,?,?)""",
+              (app_id, _id(), scheduled_at, duration_minutes, interviewer_name,
+               mode, location, room_code, now, expires, now, now, now))
+        row = connection.execute("SELECT * FROM human_interviews WHERE application_id=?",
+                                 (app_id,)).fetchone()
+    return dict(row)
+
+
+def human_expiry(scheduled_at: float, days: int | None = None) -> float:
+    """真人面试邀请的失效时间：面试时间之后 N 天（默认 3）。"""
+    return max(time.time(), float(scheduled_at or 0)) + \
+        (days or _days_env("HUMAN_INVITE_DAYS", 3)) * 86400.0
+
+
+def _human_row(app_id: str) -> dict | None:
+    with db() as connection:
+        row = connection.execute("SELECT * FROM human_interviews WHERE application_id=?",
+                                 (app_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_human_interview(app_id: str, **fields) -> dict | None:
+    """只更新传入的字段；None 表示不改。"""
+    allowed = ("scheduled_at", "duration_minutes", "interviewer_name", "mode",
+               "location", "room_code", "expires_at")
+    values = {key: value for key, value in fields.items() if key in allowed and value is not None}
+    if not values:
+        return _human_row(app_id)
+    assignments = ", ".join(f"{key}=?" for key in values)
+    with db() as connection:
+        connection.execute(f"UPDATE human_interviews SET {assignments}, updated_at=? WHERE application_id=?",
+                           (*values.values(), time.time(), app_id))
+    return _human_row(app_id)
+
+
+def mark_human_interview_accepted(app_id: str) -> None:
+    now = time.time()
+    with db() as connection:
+        connection.execute("""UPDATE human_interviews SET status='accepted',
+          accepted_at=COALESCE(accepted_at,?),updated_at=?
+          WHERE application_id=? AND status IN ('invited','accepted')""",
+          (now, now, app_id))
+
+
+def set_human_interview_result(app_id: str, result: str, notes: str,
+                               result_sent: bool) -> dict | None:
+    now = time.time()
+    with db() as connection:
+        connection.execute("""UPDATE human_interviews SET status='completed',result=?,
+          notes=?,result_sent=?,updated_at=? WHERE application_id=?""",
+          (result, notes, 1 if result_sent else 0, now, app_id))
+    return _human_row(app_id)
+
+
+def set_human_result_sent(app_id: str, visible: bool) -> bool:
+    with db() as connection:
+        cursor = connection.execute("""UPDATE human_interviews SET result_sent=?,updated_at=?
+          WHERE application_id=? AND result IS NOT NULL""",
+          (1 if visible else 0, time.time(), app_id))
+    return cursor.rowcount > 0
+
+
+def resend_human_interview(app_id: str, days: int | None = None) -> dict | None:
+    now = time.time()
+    with db() as connection:
+        row = connection.execute("SELECT * FROM human_interviews WHERE application_id=?",
+                                 (app_id,)).fetchone()
+        if not row or row["status"] == "completed":
+            return None
+        base = max(now, float(row["expires_at"] or now))
+        connection.execute("""UPDATE human_interviews SET sent_at=?,last_sent_at=?,
+          expires_at=?,send_count=COALESCE(send_count,1)+1,status='invited',
+          accepted_at=NULL,updated_at=? WHERE application_id=?""",
+          (now, now, base + (days or _days_env("HUMAN_INVITE_DAYS", 3)) * 86400.0, now, app_id))
+        row = connection.execute("SELECT * FROM human_interviews WHERE application_id=?",
+                                 (app_id,)).fetchone()
+    return dict(row)
+
+
+# ---------- 面试间报告归档 ----------
+def archive_interview_report(app_id: str, session_id: str, report: dict) -> None:
+    with db() as connection:
+        connection.execute("""INSERT INTO interview_reports
+          (application_id,session_id,report_json,archived_at) VALUES (?,?,?,?)
+          ON CONFLICT(application_id) DO UPDATE SET session_id=excluded.session_id,
+          report_json=excluded.report_json, archived_at=excluded.archived_at""",
+          (app_id, session_id, json.dumps(report, ensure_ascii=False), time.time()))
+
+
+def interview_report(app_id: str) -> dict | None:
+    with db() as connection:
+        row = connection.execute("SELECT * FROM interview_reports WHERE application_id=?",
+                                 (app_id,)).fetchone()
+    if not row:
+        return None
+    try:
+        report = json.loads(row["report_json"])
+    except ValueError:
+        return None
+    return {"sessionId": row["session_id"], "archivedAt": row["archived_at"], "report": report}
+
+
+# ---------- 邀请记录 ----------
+def list_invitations(company_id: str) -> list[dict]:
+    """邀请记录：AI 初面与真人面试合并，状态在读取时计算（过期不靠定时任务）。"""
+    with db() as connection:
+        ai_rows = connection.execute("""SELECT v.id, v.application_id, v.status,
+          v.created_at, v.sent_at, v.expires_at, v.accepted_at, v.send_count,
+          v.last_sent_at, v.result_sent, j.title AS job_title, u.name AS candidate_name
+          FROM invitations v JOIN applications a ON a.id=v.application_id
+          JOIN jobs j ON j.id=a.job_id JOIN users u ON u.id=a.candidate_id
+          WHERE j.company_id=? ORDER BY v.created_at DESC""", (company_id,)).fetchall()
+        human_rows = connection.execute("""SELECT h.id, h.application_id, h.status,
+          h.created_at, h.sent_at, h.expires_at, h.accepted_at, h.send_count,
+          h.last_sent_at, h.result_sent, h.scheduled_at, h.interviewer_name, h.mode,
+          h.result, j.title AS job_title, u.name AS candidate_name
+          FROM human_interviews h JOIN applications a ON a.id=h.application_id
+          JOIN jobs j ON j.id=a.job_id JOIN users u ON u.id=a.candidate_id
+          WHERE j.company_id=? ORDER BY h.created_at DESC""", (company_id,)).fetchall()
+    items = [{"id": row["id"], "applicationId": row["application_id"], "kind": "ai",
+              "candidateName": row["candidate_name"], "jobTitle": row["job_title"],
+              "status": row["status"], "sentAt": row["sent_at"],
+              "expiresAt": row["expires_at"], "acceptedAt": row["accepted_at"],
+              "lastSentAt": row["last_sent_at"], "sendCount": row["send_count"],
+              "resultSent": bool(row["result_sent"]), "scheduledAt": None,
+              "interviewerName": None, "mode": None, "result": None}
+             for row in ai_rows]
+    items += [{"id": row["id"], "applicationId": row["application_id"], "kind": "human",
+               "candidateName": row["candidate_name"], "jobTitle": row["job_title"],
+               "status": row["status"], "sentAt": row["sent_at"],
+               "expiresAt": row["expires_at"], "acceptedAt": row["accepted_at"],
+               "lastSentAt": row["last_sent_at"], "sendCount": row["send_count"],
+               "resultSent": bool(row["result_sent"]), "scheduledAt": row["scheduled_at"],
+               "interviewerName": row["interviewer_name"], "mode": row["mode"],
+               "result": row["result"]}
+              for row in human_rows]
+    items.sort(key=lambda item: item["sentAt"] or 0, reverse=True)
+    return items
 
 
 def delete_application(app_id: str) -> None:
