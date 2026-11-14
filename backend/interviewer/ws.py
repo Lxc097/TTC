@@ -668,6 +668,43 @@ def _decode_frame(data_url: str) -> bytes | None:
         return None
 
 
+RTC_SUBS = {"offer", "answer", "ice", "ready", "bye"}
+# SDP 通常 3~6KB，ICE 候选几百字节。设上限是因为这条消息和画面帧共用
+# 同一条接收循环，别让一个畸形的大包把候选人端的上行堵住。
+RTC_MAX_SDP = 20000
+RTC_MAX_CANDIDATE = 2000
+
+
+async def relay_rtc(hub: RoomHub, role: str, msg: dict) -> None:
+    """把 WebRTC 信令原样转给对端，服务器不解析 SDP。
+
+    媒体走浏览器之间的点对点通道，这里只搬几百字节的信令：
+    候选人发 offer、面试官回 answer，ICE 候选双向 trickle。
+    信令丢了不影响面试 —— 画面还有逐帧 JPEG 通道兜底。
+    """
+    sub = msg.get("sub")
+    if sub not in RTC_SUBS:
+        return
+    payload: dict = {"type": "rtc", "from": role, "sub": sub}
+
+    sdp = msg.get("sdp")
+    if isinstance(sdp, dict) and isinstance(sdp.get("sdp"), str) \
+            and len(sdp["sdp"]) <= RTC_MAX_SDP:
+        payload["sdp"] = {"type": sdp.get("type"), "sdp": sdp["sdp"]}
+
+    candidate = msg.get("candidate")
+    if isinstance(candidate, dict) and isinstance(candidate.get("candidate"), str) \
+            and len(candidate["candidate"]) <= RTC_MAX_CANDIDATE:
+        payload["candidate"] = {
+            "candidate": candidate["candidate"],
+            "sdpMid": candidate.get("sdpMid"),
+            "sdpMLineIndex": candidate.get("sdpMLineIndex"),
+        }
+
+    peer = "interviewer" if role == "candidate" else "candidate"
+    await hub.send(peer, payload)
+
+
 async def handle_message(hub: RoomHub, role: str, msg: dict) -> None:
     # 时间一律由服务端给：客户端 t 只在会话尚未建立时兜底
     t = hub.server_t() if hub.session is not None else float(msg.get("t", 0) or 0)
@@ -720,6 +757,10 @@ async def handle_message(hub: RoomHub, role: str, msg: dict) -> None:
         # 只有面试官能结束整场，候选人最多退出连接
         if role == "interviewer":
             await hub.on_end()
+
+    elif mtype == "rtc":
+        # 点对点视频信令：只转给对端，不落库、不进分析链。
+        await relay_rtc(hub, role, msg)
 
     elif mtype == "ping":
         await hub.send(role, {"type": "pong", "t": t})

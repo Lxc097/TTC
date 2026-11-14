@@ -770,6 +770,7 @@ routes['/interviewer/room/:id'] = {
       '<div class="interview-shell mt-16">' +
       '<div class="interview-main">' +
       '<div class="stage stage-xl" id="intStage">' +
+      '<video id="peerVideoRtc" class="peer-video" autoplay playsinline muted aria-label="候选人实时画面（点对点直连）"></video>' +
       '<img id="peerVideo" class="peer-video" alt="候选人实时画面">' +
       '<div class="vid-fill" id="stagePlaceholder"><div><div class="avatar">李</div><div class="place-name">候选人 · 李想</div><p class="stage-hint">候选人开启摄像头后，画面会出现在这里</p></div></div>' +
       '<div class="status-float"><span class="pulse"></span><span id="intStatus">等待候选人进入…</span></div>' +
@@ -795,7 +796,7 @@ routes['/interviewer/room/:id'] = {
       '</main>' + footerHtml();
   },
   mount(p) {
-    const state = { code: p.id, ticket: hrRoomTicket(p.id), linked: Boolean(hrRoomTicket(p.id)), sec: 0, capi: 0, adopt: 0, ignore: 0, cues: [], ws: null, ended: false, hasSignal: false };
+    const state = { code: p.id, ticket: hrRoomTicket(p.id), linked: Boolean(hrRoomTicket(p.id)), sec: 0, capi: 0, adopt: 0, ignore: 0, cues: [], ws: null, ended: false, hasSignal: false, pc: null, pcPending: [], rtcLive: false };
     document.body.classList.add('room-wide');
     window.__corgiJob = '前端工程师';
     every(() => { state.sec++; $('#timer').textContent = fmtTs(state.sec); }, 1000);
@@ -858,7 +859,11 @@ function paintSignal(m) {
 function connectInterviewer(state) {
   const ws = new WebSocket(BE.ws + '/ws/room/' + encodeURIComponent(state.code) + '?role=interviewer' + hrTicketQuery(state.code));
   state.ws = ws;
-  ws.onopen = () => { const n = $('#bandNote'); if (n) n.textContent = '已连接后端'; };
+  ws.onopen = () => {
+    const n = $('#bandNote'); if (n) n.textContent = '已连接后端';
+    // 告诉候选人「我在这，可以发点对点 offer 了」
+    ws.send(JSON.stringify({ type: 'rtc', sub: 'ready' }));
+  };
   ws.onmessage = ev => {
     let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
     handleIntMsg(state, m);
@@ -866,7 +871,100 @@ function connectInterviewer(state) {
   ws.onclose = () => { if (!state.ended) { const n = $('#bandNote'); if (n) n.textContent = state.linked ? '连接已断开 · 请刷新后核对面试状态' : '后端离线 · 本地演示模式'; const st = $('#intStatus'); if (st && !state.hasSignal) st.textContent = state.linked ? '未能连接已邀请的面试房间' : '等待候选人进入…'; } };
   every(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'ping', t: state.sec })); }, 15000);
 }
+/* ---------------- 点对点画面（WebRTC） ----------------
+   候选人推流、面试官收流，媒体直连不过服务器；服务器只转信令。
+   建不起来就继续用原来的 JPEG 逐帧通道，界面会标明当前是哪一种，
+   不会让人把每两秒一帧误当成实时视频。 */
+const RTC_ICE_SERVERS = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  { urls: ['stun:stun.cloudflare.com:3478'] },
+];
+
+function rtcReset(state) {
+  const pc = state.pc;
+  state.pc = null;
+  state.pcPending = [];
+  state.rtcLive = false;
+  if (pc) { try { pc.close(); } catch (_) { /* 已经关了 */ } }
+  const video = $('#peerVideoRtc');
+  if (video) { try { video.srcObject = null; } catch (_) { /* 已清空 */ } video.classList.remove('on'); }
+}
+
+function rtcEnsure(state) {
+  if (state.pc) return state.pc;
+  if (typeof RTCPeerConnection === 'undefined') return null;
+  const pc = new RTCPeerConnection({ iceServers: RTC_ICE_SERVERS, bundlePolicy: 'max-bundle' });
+  state.pc = pc;
+  state.pcPending = [];
+  pc.onicecandidate = (event) => {
+    const candidate = event.candidate;
+    if (!candidate || !state.ws || state.ws.readyState !== 1) return;
+    state.ws.send(JSON.stringify({ type: 'rtc', sub: 'ice', candidate: {
+      candidate: candidate.candidate,
+      sdpMid: candidate.sdpMid,
+      sdpMLineIndex: candidate.sdpMLineIndex,
+    } }));
+  };
+  pc.ontrack = (event) => {
+    const video = $('#peerVideoRtc');
+    if (!video) return;
+    video.srcObject = event.streams[0] || new MediaStream([event.track]);
+    const playing = video.play();
+    if (playing && playing.catch) playing.catch(() => { /* 等用户手势 */ });
+    video.classList.add('on');
+    const placeholder = $('#stagePlaceholder');
+    if (placeholder) placeholder.style.display = 'none';
+    const chip = $('#stageChip');
+    if (chip) chip.textContent = '候选人画面 · 点对点直连';
+    state.rtcLive = true;
+    state.lastFrameAt = Date.now();
+  };
+  pc.onconnectionstatechange = () => {
+    if (state.pc !== pc) return;
+    if (pc.connectionState === 'connected') {
+      state.rtcLive = true;
+      const chip = $('#stageChip');
+      if (chip) chip.textContent = '候选人画面 · 点对点直连';
+    } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      rtcReset(state);
+      const chip = $('#stageChip');
+      if (chip) chip.textContent = '点对点断开 · 已切回逐帧';
+    }
+  };
+  return pc;
+}
+
+async function rtcOnMessage(state, m) {
+  if (m.sub === 'offer' && m.sdp) {
+    // 候选人重开摄像头会重新发 offer，旧连接还停在 negotiate 状态就先拆掉
+    if (state.pc && state.pc.signalingState !== 'stable') rtcReset(state);
+    const pc = rtcEnsure(state);
+    if (!pc) return;
+    try {
+      await pc.setRemoteDescription(m.sdp);
+      for (const queued of state.pcPending.splice(0)) {
+        try { await pc.addIceCandidate(queued); } catch (_) { /* 过期候选 */ }
+      }
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      if (state.ws && state.ws.readyState === 1) {
+        state.ws.send(JSON.stringify({ type: 'rtc', sub: 'answer',
+                                       sdp: { type: 'answer', sdp: pc.localDescription.sdp } }));
+      }
+    } catch (_) { rtcReset(state); }
+    return;
+  }
+  if (m.sub === 'ice' && m.candidate) {
+    const pc = state.pc;
+    if (!pc || !pc.remoteDescription) { state.pcPending.push(m.candidate); return; }
+    try { await pc.addIceCandidate(m.candidate); } catch (_) { /* 过期候选 */ }
+    return;
+  }
+  if (m.sub === 'bye') { rtcReset(state); }
+}
+
 function applyPeerFrame(state, m) {
+  if (state.rtcLive) return;   // 直连画面优先，逐帧只在没打通时露脸
   const el = $('#peerVideo'); if (!el || !m.img) return;
   el.src = m.img;
   el.classList.add('on');
@@ -876,12 +974,14 @@ function applyPeerFrame(state, m) {
 }
 function resetPeerStage(state) {
   state.lastFrameAt = 0;
+  rtcReset(state);
   const el = $('#peerVideo'); if (el) { el.classList.remove('on'); el.removeAttribute('src'); }
   const ph = $('#stagePlaceholder'); if (ph) ph.style.display = '';
   const chip = $('#stageChip'); if (chip) chip.textContent = '画面未开启';
 }
 function refreshStageChip(state) {
   const chip = $('#stageChip'); if (!chip) return;
+  if (state.rtcLive) { chip.textContent = '候选人画面 · 点对点直连'; return; }
   if (!state.lastFrameAt) { chip.textContent = '画面未开启'; return; }
   if (Date.now() - state.lastFrameAt > 4000) chip.textContent = '画面已暂停';
 }
@@ -917,6 +1017,9 @@ function handleIntMsg(state, m) {
   }
   else if (m.type === 'peer_frame') {
     applyPeerFrame(state, m);
+  }
+  else if (m.type === 'rtc') {
+    rtcOnMessage(state, m);
   }
   else if (m.type === 'signal') {
     state.hasSignal = true;

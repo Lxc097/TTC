@@ -17,6 +17,9 @@
     microphoneGeneration: 0,
     cameraStream: null,
     frameTimer: null,
+    pc: null,
+    pcPending: [],
+    pcLive: false,
     clipRecorder: null,
     clipTimer: null,
     recordRequest: null,
@@ -89,6 +92,90 @@
     text('mic-button', '开启语音转写');
   }
 
+  /* ---------------- 点对点画面（WebRTC） ----------------
+     摄像头画面不再经服务器绕行：两个浏览器直接建连，服务器只转
+     offer/answer/ice 这几百字节的信令。打不通（对称 NAT、公司网禁 UDP）
+     时什么都不用做 —— 逐帧 JPEG 通道一直在跑，面试官端会自动回退到它。
+     信号分析仍然吃 320×240 的逐帧 JPEG，两条通路互不影响。 */
+  const RTC_ICE_SERVERS = [
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+    { urls: ['stun:stun.cloudflare.com:3478'] },
+  ];
+
+  function rtcReset() {
+    const pc = state.pc;
+    state.pc = null;
+    state.pcPending = [];
+    state.pcLive = false;
+    if (pc) { try { pc.close(); } catch (_) { /* 已经关了 */ } }
+  }
+
+  function rtcEnsure() {
+    if (state.pc) return state.pc;
+    if (typeof RTCPeerConnection === 'undefined') return null;
+    const pc = new RTCPeerConnection({ iceServers: RTC_ICE_SERVERS, bundlePolicy: 'max-bundle' });
+    state.pc = pc;
+    state.pcPending = [];
+    pc.onicecandidate = (event) => {
+      const candidate = event.candidate;
+      if (!candidate || !wsReady()) return;
+      send({ type: 'rtc', sub: 'ice', candidate: {
+        candidate: candidate.candidate,
+        sdpMid: candidate.sdpMid,
+        sdpMLineIndex: candidate.sdpMLineIndex,
+      } });
+    };
+    pc.onconnectionstatechange = () => {
+      if (state.pc !== pc) return;
+      if (pc.connectionState === 'connected') {
+        state.pcLive = true;
+        text('camera-status', '画面已直连面试官（点对点，不经过服务器）。');
+      } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        rtcReset();
+        text('camera-status', '点对点没打通，已自动切回逐帧通道；面试不受影响。');
+      }
+    };
+    return pc;
+  }
+
+  async function rtcOffer() {
+    if (!state.consent || !state.cameraStream || !wsReady() || !state.interviewerOnline) return;
+    const track = state.cameraStream.getVideoTracks()[0];
+    if (!track) return;
+    // 上一轮 offer 没等到 answer（对端还没连上），直接弃用旧连接重来
+    if (state.pc && state.pc.signalingState !== 'stable') rtcReset();
+    const pc = rtcEnsure();
+    if (!pc || pc.signalingState !== 'stable') return;
+    if (!pc.getSenders().some((sender) => sender.track === track)) {
+      try { pc.addTrack(track, state.cameraStream); } catch (_) { return; }
+    }
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+    } catch (_) { rtcReset(); return; }
+    send({ type: 'rtc', sub: 'offer', sdp: { type: 'offer', sdp: pc.localDescription.sdp } });
+  }
+
+  async function rtcOnMessage(message) {
+    if (message.sub === 'answer' && message.sdp) {
+      const pc = state.pc;
+      if (!pc) return;
+      try { await pc.setRemoteDescription(message.sdp); } catch (_) { return; }
+      for (const queued of state.pcPending.splice(0)) {
+        try { await pc.addIceCandidate(queued); } catch (_) { /* 过期候选 */ }
+      }
+      return;
+    }
+    if (message.sub === 'ice' && message.candidate) {
+      const pc = state.pc;
+      if (!pc || !pc.remoteDescription) { state.pcPending.push(message.candidate); return; }
+      try { await pc.addIceCandidate(message.candidate); } catch (_) { /* 过期候选 */ }
+      return;
+    }
+    if (message.sub === 'ready') { rtcOffer(); return; }
+    if (message.sub === 'bye') { rtcReset(); text('camera-status', '面试官已断开画面连接。'); }
+  }
+
   function stopCamera() {
     if (state.wakeLock) { try { state.wakeLock.release(); } catch (_) { /* 已释放 */ } state.wakeLock = null; }
     if (state.frameTimer) clearInterval(state.frameTimer);
@@ -97,6 +184,8 @@
     state.clipTimer = null;
     if (state.clipRecorder && state.clipRecorder.state !== 'inactive') state.clipRecorder.stop();
     state.clipRecorder = null;
+    // 先告诉对端断开，再拆连接；否则面试官那边会留一张最后一帧的静止图
+    if (state.pc) { send({ type: 'rtc', sub: 'bye' }); rtcReset(); }
     if (state.cameraStream) state.cameraStream.getTracks().forEach((track) => track.stop());
     state.cameraStream = null;
     const video = document.getElementById('camera-preview');
@@ -341,9 +430,15 @@
         state.interviewerOnline = Boolean(message.room.interviewer_online);
         text('peer-pill', state.interviewerOnline ? '面试官已连接' : '等待面试官连接');
         setConnection('已连接到真实面试房间', 'on');
+        if (state.interviewerOnline) rtcOffer();
       } else if (message.type === 'peer' && message.role === 'interviewer') {
         state.interviewerOnline = message.state === 'online';
         text('peer-pill', state.interviewerOnline ? '面试官已连接' : '等待面试官连接');
+        // 面试官上线/重连就重新发一次 offer；下线就把直连拆掉，等它回来再建
+        if (state.interviewerOnline) rtcOffer();
+        else rtcReset();
+      } else if (message.type === 'rtc') {
+        rtcOnMessage(message);
       } else if (message.type === 'candidate_snapshot') {
         if (typeof message.interviewer_online === 'boolean') {
           state.interviewerOnline = message.interviewer_online;
@@ -485,6 +580,8 @@
       }, isMobile() ? 2600 : 2000);
       text('camera-status','摄像头已开启，画面按房间协议发送；你可随时停止。');
       text('camera-button','停止摄像头');
+      // 面试官已经在房间里的话，开摄即发起点对点直连
+      rtcOffer();
       // 一场面试几十分钟，手机上尽量别让屏幕自动熄灭
       try { if (navigator.wakeLock) state.wakeLock = await navigator.wakeLock.request('screen'); } catch (_) { state.wakeLock = null; }
     } catch (err) { stopCamera(); text('camera-status', cameraErrorText(err)); }
