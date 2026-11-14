@@ -982,20 +982,21 @@ function rtcEnsure(state) {
     video.srcObject = event.streams[0] || new MediaStream([event.track]);
     const playing = video.play();
     if (playing && playing.catch) playing.catch(() => { /* 等用户手势 */ });
-    video.classList.add('on');
-    const placeholder = $('#stagePlaceholder');
-    if (placeholder) placeholder.style.display = 'none';
-    const chip = $('#stageChip');
-    if (chip) chip.textContent = '候选人画面 · 点对点直连';
-    state.rtcLive = true;
-    state.lastFrameAt = Date.now();
+    // 这里**不能**把画面标成"直连"：ontrack 只说明收到了轨道，
+    // DTLS 握手没完成之前一帧都不会有。早标的结果是盖住逐帧通道、
+    // 又显示一张不动的冻结图 —— 看起来比逐帧还卡。
   };
   pc.onconnectionstatechange = () => {
     if (state.pc !== pc) return;
     if (pc.connectionState === 'connected') {
       state.rtcLive = true;
+      const video = $('#peerVideoRtc');
+      if (video) video.classList.add('on');
+      const placeholder = $('#stagePlaceholder');
+      if (placeholder) placeholder.style.display = 'none';
       const chip = $('#stageChip');
       if (chip) chip.textContent = '候选人画面 · 点对点直连';
+      state.lastFrameAt = Date.now();
       rtcDiag(state, 'connected');
     } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
       rtcReset(state);
