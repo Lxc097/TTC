@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ArrowLeft, ArrowRight, Camera, CameraOff, Check, Info, LoaderCircle, Mic, MicOff, RefreshCw, ShieldCheck } from 'lucide-react';
 import { CameraPreview } from '../components/camera/CameraPreview';
 import { useCameraManager } from '../components/camera/CameraManager';
+import { LivePulsePanel, PULSE_CONTINUE_KEY } from '../components/analytics/LivePulsePanel';
 import { useMediaDevices, type DeviceStatus } from '../hooks/useMediaDevices';
 import './DeviceCheck.css';
 
@@ -29,6 +30,8 @@ export function DeviceCheck({ mode = 'mock', formal = false, onContinue, onBack 
   const devices = useMediaDevices();
   const [consent, setConsent] = useState<boolean | null>(null);
   const [confirmed, setConfirmed] = useState(false);
+  const [previewVideo, setPreviewVideo] = useState<HTMLVideoElement | null>(null);
+  const [pulseEnabled, setPulseEnabled] = useState(false);
   const cameraEnabled = camera.status === 'ready' && Boolean(camera.stream);
   const microphoneEnabled = devices.microphoneStatus === 'ready' && Boolean(devices.microphoneStream);
   const canContinue = confirmed && (formal || consent !== null);
@@ -45,13 +48,13 @@ export function DeviceCheck({ mode = 'mock', formal = false, onContinue, onBack 
           <h1>检查你的设备</h1>
           <p>接入摄像头与麦克风，确认画面和声音正常。也可以直接使用纯文字方式参加。</p>
         </div>
-        <span className="device-page__privacy"><ShieldCheck size={17} /> 设备检测画面仅在本机预览</span>
+        <span className="device-page__privacy"><ShieldCheck size={17} /> 设备检测画面仅在本机处理</span>
       </header>
 
       <div className="device-grid">
         <section className="device-card device-card--preview" aria-label="摄像头检测">
           <div className="device-card__title"><span className="device-icon"><Camera size={19} /></span><div><h2>摄像头</h2><p>检查实时画面并选择使用的设备</p></div><span className={'device-status device-status--' + camera.status}>{statusText[camera.status]}</span></div>
-          <CameraPreview stream={camera.stream} emptyLabel={camera.status === 'requesting' ? '正在连接摄像头…' : '开启摄像头后，实时画面将在这里显示'} />
+          <CameraPreview stream={camera.stream} onVideoElement={setPreviewVideo} emptyLabel={camera.status === 'requesting' ? '正在连接摄像头…' : '开启摄像头后，实时画面将在这里显示'} />
           <div className="device-camera-actions">
             {cameraEnabled ? (
               <button type="button" className="device-button device-button--secondary" onClick={camera.stop}><CameraOff size={17} /> 关闭摄像头</button>
@@ -84,20 +87,28 @@ export function DeviceCheck({ mode = 'mock', formal = false, onContinue, onBack 
             <p className="device-helper">语音转写由浏览器调用系统默认麦克风；若电平不动或没有识别文字，请检查系统输入设备。听不到题目时也可阅读文字并直接打字作答。</p>
           </section>
 
-          {formal ? <section className="device-card device-card--consent"><div className="device-card__title"><span className="device-icon"><ShieldCheck size={19} /></span><div><h2>画面隐私</h2><p>本次招聘初面只根据岗位问题与回答进行对话</p></div></div><p className="device-consent-copy">摄像头仅用于本机预览，不发送画面进行生理分析。麦克风由浏览器转写；也可以全程使用文字回答。</p></section> : <section className="device-card device-card--consent">
+          {formal ? <section className="device-card device-card--consent"><div className="device-card__title"><span className="device-icon"><ShieldCheck size={19} /></span><div><h2>画面隐私</h2><p>本次招聘初面只根据岗位问题与回答进行对话</p></div></div><p className="device-consent-copy">摄像头默认仅用于本机预览；下方波形需你主动开启，仅在本机进行光学采样，不上传画面、不参与评分。也可以全程使用文字回答。</p></section> : <section className="device-card device-card--consent">
             <div className="device-card__title"><span className="device-icon"><ShieldCheck size={19} /></span><div><h2>画面分析授权</h2><p>请明确选择是否授权后续图像分析</p></div></div>
-            <p className="device-consent-copy">{formal ? '画面分析是可选项。只有你主动选择 FacePhys 真实分析且已授权时，才会录制约 30 秒视频片段并上传第三方处理；不同意不影响初面。' : '演示模式不会分析摄像头画面。只有你在面试中主动选择 FacePhys 真实分析且已授权时，才会录制约 30 秒视频片段并上传第三方处理；选择不同意不影响面试。'}</p>
+            <p className="device-consent-copy">下方动态波形仅在你打开开关时于本机采样。只有另行授权并主动选择 FacePhys 真实分析，才会录制约 30 秒视频并上传第三方；不同意不影响面试。</p>
             <div className="device-consent-options" role="radiogroup" aria-label="是否同意画面分析">
-              <label className={consent === true ? 'is-selected' : ''}><input type="radio" name="analysis-consent" checked={consent === true} onChange={() => setConsent(true)} /> 同意后续画面分析</label>
-              <label className={consent === false ? 'is-selected' : ''}><input type="radio" name="analysis-consent" checked={consent === false} onChange={() => setConsent(false)} /> 暂不同意，仅参加面试</label>
+              <label className={consent === true ? 'is-selected' : ''}><input type="radio" name="analysis-consent" checked={consent === true} onChange={() => setConsent(true)} /> 同意后续 FacePhys 分段分析</label>
+              <label className={consent === false ? 'is-selected' : ''}><input type="radio" name="analysis-consent" checked={consent === false} onChange={() => setConsent(false)} /> 不同意第三方分析，仅参加面试</label>
             </div>
           </section>}
         </div>
       </div>
 
+      {mode !== 'room' && <LivePulsePanel videoElement={previewVideo} cameraReady={cameraEnabled} enabled={pulseEnabled} onEnabledChange={setPulseEnabled} />}
+
       <footer className="device-page__footer">
         <div className="device-page__footer-copy"><label><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> <span>我已确认设备状态，准备继续</span></label><small><Info size={14} /> {mode === 'room' ? '进入等候室后会释放摄像头与麦克风。' : '进入面试时复用当前摄像头；离开面试后自动释放媒体轨道。'}</small></div>
-        <button type="button" className="device-button device-button--primary device-button--continue" disabled={!canContinue} onClick={() => onContinue({ cameraEnabled, microphoneEnabled, consent: !formal && consent === true, cameraDeviceId: camera.selectedDeviceId })}>{mode === 'room' ? '前往等候室' : '开始面试'} <ArrowRight size={18} /></button>
+        <button type="button" className="device-button device-button--primary device-button--continue" disabled={!canContinue} onClick={() => {
+          try {
+            if (pulseEnabled) sessionStorage.setItem(PULSE_CONTINUE_KEY, '1');
+            else sessionStorage.removeItem(PULSE_CONTINUE_KEY);
+          } catch { /* The interview can proceed without session storage. */ }
+          onContinue({ cameraEnabled, microphoneEnabled, consent: !formal && consent === true, cameraDeviceId: camera.selectedDeviceId });
+        }}>{mode === 'room' ? '前往等候室' : '开始面试'} <ArrowRight size={18} /></button>
       </footer>
       {!cameraEnabled && <p className="device-text-mode"><Check size={15} /> {mode === 'room' ? '仍可进入演示等候室；当前不会建立真实音视频连接。' : '当前可使用纯文字面试；摄像头不是继续的必要条件。'}</p>}
     </main>
