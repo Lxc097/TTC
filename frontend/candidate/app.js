@@ -117,13 +117,18 @@
     pc.getStats(null).then((report) => {
       const byId = {};
       const info = { pair: null, out: null };
+      let selectedId = null;
       report.forEach((s) => { byId[s.id] = s; });
       report.forEach((s) => {
-        if (s.type === 'candidate-pair' && s.selected && s.state === 'succeeded') {
+        if (s.type === 'transport' && s.selectedCandidatePairId) selectedId = s.selectedCandidatePairId;
+      });
+      report.forEach((s) => {
+        if (s.type === 'candidate-pair' && s.id === selectedId) {
           const local = byId[s.localCandidateId] || {};
           const remote = byId[s.remoteCandidateId] || {};
           info.pair = {
             lt: local.candidateType || '?', rt: remote.candidateType || '?',
+            proto: local.protocol || '?',
             rtt: s.currentRoundTripTime ? Math.round(s.currentRoundTripTime * 1000) : null,
           };
         }
