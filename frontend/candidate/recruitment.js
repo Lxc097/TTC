@@ -223,7 +223,7 @@
   }
 
   function renderSubmitted(application) {
-    app.innerHTML = '<section class="recruit-submitted"><span class="recruit-done" aria-hidden="true">✓</span><span class="eyebrow">申请已创建</span><h1>简历已提交</h1><p>你的资料已进入招聘流程，后续通知将在这里更新。</p><div class="recruit-submitted-meta"><span>目标岗位</span><strong>' + esc(application.jobTitle) + '</strong><span>当前状态</span><strong>' + esc(statusLabel(application.status)) + '</strong></div><a class="btn btn-primary" href="applications.html">查看申请进度</a></section>';
+    app.innerHTML = '<section class="recruit-submitted"><span class="recruit-done" aria-hidden="true">✓</span><span class="eyebrow">申请已创建</span><h1>简历已提交</h1><p>你的资料已进入招聘流程，后续通知将在这里更新。</p><div class="recruit-submitted-meta"><span>目标岗位</span><strong>' + esc(application.jobTitle) + '</strong><span>当前状态</span><strong>' + esc(statusLabel(application.status)) + '</strong></div><div class="recruit-actions"><a class="btn btn-primary" href="status.html">查看我的状态</a><a class="btn btn-quiet" href="applications.html">申请记录</a></div></section>';
   }
 
   function renderApplications() {
@@ -258,7 +258,265 @@
     setInterval(() => { if (document.visibilityState === 'visible') refresh(); }, 15000);
   }
 
-  if (page === 'account') renderAccount();
+  /* ---------- 我的状态：只展示当前阶段 ---------- */
+  const STAGE_TEXT = {
+    applied: { label: '阶段 1', title: '发送简历', desc: '简历已进入企业审核。企业推进后，下一步安排会出现在这里。' },
+    ai_interview: { label: '阶段 2', title: 'AI 面试', desc: '企业已发出 AI 初面邀请，请在截止时间前完成。' },
+    human_interview: { label: '阶段 3', title: '真人面试', desc: '企业已安排真人面试，请按约定时间参加。' },
+    ended: { label: '已结束', title: '流程结束', desc: '本次招聘流程已经结束。' },
+  };
+
+  function modeText(mode) {
+    return ({ video: '线上视频', onsite: '线下面试', phone: '电话面试' })[mode] || '待确认';
+  }
+  function deadlineText(epoch) {
+    const date = new Date(Number(epoch) * 1000);
+    if (isNaN(date.getTime())) return '—';
+    const days = Math.ceil((date.getTime() - Date.now()) / 86400000);
+    return dateLabel(epoch) + (days > 0 ? '（' + days + ' 天后截止）' : '（已过期）');
+  }
+  function metaRow(label, value) {
+    return '<div><span>' + esc(label) + '</span><strong>' + esc(value || '—') + '</strong></div>';
+  }
+  function stageKey(item) { return STAGE_TEXT[item.stage] ? item.stage : 'applied'; }
+  function processText(item) {
+    if (item.status === 'failed' || item.resumeStatus === 'failed') return '处理遇到问题';
+    if (['queued', 'parsing'].includes(item.resumeStatus)) return '解析中';
+    if (['queued', 'screening'].includes(item.screeningStatus)) return '初筛中';
+    if (item.screeningStatus === 'completed') return '已完成初筛，等待企业审核';
+    return '处理中';
+  }
+
+  async function renderStatus() {
+    if (!auth()) { guest('查看你的招聘阶段', 'status.html'); return; }
+    app.innerHTML = '<section class="recruit-list-head"><div><span class="eyebrow">个人端</span><h1>我的状态</h1><p>这里只看当前阶段与下一步；后续安排由企业推进后更新。</p></div><a class="btn btn-ghost" href="applications.html">申请记录</a></section>'
+      + '<p id="status-error" class="inline-error hidden" role="alert"></p><div id="status-panel"><p class="muted">正在读取状态…</p></div>';
+    await refreshStatus();
+    setInterval(() => {
+      if (document.visibilityState === 'visible' && byId('status-panel') && !byId('status-upload-form')) refreshStatus(true);
+    }, 20000);
+  }
+
+  async function refreshStatus(silent) {
+    const panel = byId('status-panel');
+    if (!panel) return;
+    try {
+      const payload = await api('/api/applications/my');
+      const items = (Array.isArray(payload.items) ? payload.items : []).slice();
+      if (!items.length) { await drawStatusUpload(panel); return; }
+      items.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      const wanted = params.get('app');
+      const current = items.find((item) => item.id === wanted) || items[0];
+      try { localStorage.setItem('ttc.candidate.lastApp', current.id); } catch (_) { /* storage may be blocked */ }
+      drawStatusPanel(panel, current, items);
+      showError('status-error', '');
+    } catch (error) {
+      if (!silent) {
+        showError('status-error', error.message || '无法读取申请状态。');
+        panel.innerHTML = '<p class="muted">暂时无法读取状态，请稍后重试。</p>';
+      }
+    }
+  }
+
+  function drawStatusPanel(panel, current, items) {
+    const stage = stageKey(current);
+    const text = STAGE_TEXT[stage];
+    const switcher = items.length > 1
+      ? '<div class="status-switch" role="group" aria-label="切换申请">' + items.map((item) =>
+        '<button type="button" data-app="' + esc(item.id) + '" class="status-pill' + (item.id === current.id ? ' on' : '') + '">'
+        + esc(item.jobTitle || '申请') + '</button>').join('') + '</div>'
+      : '';
+    panel.innerHTML = switcher
+      + '<section class="card status-card">'
+      + '<header class="status-head"><span class="status-stage">' + esc(text.label) + '</span>'
+      + '<div><h2>' + esc(text.title) + '</h2><p>' + esc(current.jobTitle || '目标岗位') + ' · ' + esc(current.companyName || '招聘企业') + '</p></div>'
+      + '<span class="status-chip">' + esc(current.stageLabel || text.title) + '</span></header>'
+      + '<p class="status-desc">' + esc(text.desc) + '</p>'
+      + statusBody(stage, current)
+      + '<div class="status-actions">' + statusActions(stage, current) + '</div>'
+      + '</section>';
+    panel.querySelectorAll('[data-app]').forEach((button) => {
+      button.onclick = () => {
+        const url = new URL(location.href);
+        url.searchParams.set('app', button.dataset.app);
+        params.set('app', button.dataset.app);
+        history.replaceState(null, '', url);
+        refreshStatus();
+      };
+    });
+    panel.querySelectorAll('[data-enter-human]').forEach((button) => {
+      button.onclick = async () => {
+        button.disabled = true;
+        const original = button.textContent;
+        button.textContent = '正在进入…';
+        showError('status-error', '');
+        try {
+          const result = await api('/api/applications/' + encodeURIComponent(current.id) + '/human-interview/enter', { method: 'POST' });
+          if (result.interviewPath) { location.href = result.interviewPath; return; }
+          button.disabled = false;
+          button.textContent = original;
+          showError('status-error', '本次为' + modeText(result.mode) + '：' + (result.location || '请按约定地点参加'));
+        } catch (error) {
+          button.disabled = false;
+          button.textContent = original;
+          showError('status-error', error.message || '暂时无法进入面试房间。');
+        }
+      };
+    });
+  }
+
+  function statusBody(stage, item) {
+    if (stage === 'applied') {
+      const failed = item.status === 'failed' || item.resumeStatus === 'failed';
+      return '<dl class="status-meta">'
+        + metaRow('提交时间', dateLabel(item.createdAt))
+        + metaRow('简历处理', processText(item))
+        + metaRow('当前状态', statusLabel(item.status))
+        + '</dl>'
+        + (failed
+          ? '<p class="status-note warn">简历处理遇到问题。你可以在申请记录里提交更正说明，或联系企业招聘人员。</p>'
+          : '<p class="status-note">企业审核完成后，下一步安排会出现在这里。</p>');
+    }
+    if (stage === 'ai_interview') {
+      const invitation = item.invitation || {};
+      const state = invitation.state || 'pending';
+      const stateMap = { pending: '待开始', accepted: '进行中', expired: '已过期', completed: '已完成' };
+      return '<dl class="status-meta">'
+        + metaRow('邀请时间', dateLabel(invitation.sentAt))
+        + metaRow('截止时间', invitation.expiresAt ? deadlineText(invitation.expiresAt) : '—')
+        + metaRow('邀请状态', stateMap[state] || '待开始')
+        + '</dl>'
+        + (state === 'expired' ? '<p class="status-note warn">邀请已过期。请联系企业招聘人员重新发送邀请。</p>' : '')
+        + (state === 'completed' ? '<p class="status-note">AI 初面已完成，等待企业通知下一步安排。</p>' : '')
+        + (state === 'pending' || state === 'accepted' ? '<p class="status-note">进入前请确认麦克风、摄像头可用，并选择安静的环境作答。</p>' : '')
+        + (item.aiResult?.visible ? '<p class="status-note ok">企业已收到你的 AI 初面结果。</p>' : '');
+    }
+    if (stage === 'human_interview') {
+      const interview = item.humanInterview || {};
+      const stateMap = { pending: '待开始', accepted: '已接受', expired: '已过期', completed: '已完成', cancelled: '已取消' };
+      return '<dl class="status-meta">'
+        + metaRow('面试时间', dateLabel(interview.scheduledAt) + (interview.durationMinutes ? ' · ' + interview.durationMinutes + ' 分钟' : ''))
+        + metaRow('面试官', interview.interviewerName)
+        + metaRow('面试形式', modeText(interview.mode))
+        + (interview.mode === 'video' ? metaRow('房间号', interview.roomCode || '进入时分配') : metaRow('地点 / 联系方式', interview.location))
+        + metaRow('状态', stateMap[interview.state] || '待开始')
+        + '</dl>'
+        + (interview.state === 'expired' ? '<p class="status-note warn">面试安排已过期，请联系企业重新安排。</p>' : '')
+        + (interview.state === 'completed' ? '<p class="status-note">真人面试已完成。' + (item.result?.visible ? '' : '结果由企业决定是否发送。') + '</p>' : '')
+        + (interview.mode !== 'video' && ['pending', 'accepted'].includes(interview.state) ? '<p class="status-note">本次为' + modeText(interview.mode) + '，请按约定地点或联系方式参加。</p>' : '')
+        + (item.result?.visible ? '<p class="status-note ok">企业已发送结论：' + esc(item.result.message) + '</p>' : '');
+    }
+    const result = item.result;
+    return '<dl class="status-meta">' + metaRow('岗位', item.jobTitle) + metaRow('状态', '流程已结束') + '</dl>'
+      + (result?.visible
+        ? '<p class="status-result">' + esc(result.conclusion) + '</p><p class="status-note">' + esc(result.message) + '</p>'
+        : '<p class="status-note">企业没有发送结论。感谢你的参与。</p>');
+  }
+
+  function statusActions(stage, item) {
+    const records = '<a class="btn btn-ghost" href="applications.html">申请记录 / 更正</a>';
+    if (stage === 'applied') {
+      return records + '<a class="btn btn-primary" href="apply.html">继续投递其他岗位</a>';
+    }
+    if (stage === 'ai_interview') {
+      const state = item.invitation?.state || 'pending';
+      const canEnter = (state === 'pending' || state === 'accepted') && item.invitation?.interviewPath;
+      return (canEnter ? '<a class="btn btn-primary" href="' + esc(item.invitation.interviewPath) + '">进入 AI 初面</a>' : '')
+        + records + '<a class="btn btn-ghost" href="apply.html">继续投递其他岗位</a>';
+    }
+    if (stage === 'human_interview') {
+      const enter = item.humanInterview?.enterable
+        ? '<button type="button" class="btn btn-primary" data-enter-human>进入面试房间</button>' : '';
+      return enter + records + '<a class="btn btn-ghost" href="apply.html">继续投递其他岗位</a>';
+    }
+    return '<a class="btn btn-primary" href="apply.html">继续投递其他岗位</a>' + records;
+  }
+
+  async function drawStatusUpload(panel) {
+    let jobs = [];
+    try { jobs = (await api('/api/jobs', {}, false)).items || []; } catch (_) { jobs = []; }
+    panel.innerHTML = '<section class="card status-card status-card-upload">'
+      + '<header class="status-head"><span class="status-stage">阶段 1</span>'
+      + '<div><h2>发送简历</h2><p>还没有申请记录，选择岗位并上传简历开始。</p></div></header>'
+      + '<form id="status-upload-form" class="status-upload">'
+      + '<label class="status-field" for="status-job"><span>目标岗位</span><select id="status-job" class="recruit-input" required><option value="">请选择已发布的岗位</option>'
+      + jobs.map((job) => '<option value="' + esc(job.id) + '">' + esc(job.title) + ' · ' + esc(job.companyName || '招聘企业') + '</option>').join('')
+      + '</select></label>'
+      + '<input id="status-resume" type="file" class="sr-only" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">'
+      + '<button id="status-zone" type="button" class="recruit-dropzone"><span class="recruit-upload-icon" aria-hidden="true">↑</span><strong>拖拽文件到这里，或点击选择</strong><small>PDF / DOCX · 不超过 8 MB</small></button>'
+      + '<div id="status-file" class="recruit-file hidden"></div>'
+      + '<label class="recruit-check"><input id="status-consent" type="checkbox"><span>我同意将简历和初筛资料用于所投递岗位的招聘评估，并按授权提供给对应企业。</span></label>'
+      + '<p id="status-upload-error" class="inline-error hidden" role="alert"></p>'
+      + '<div class="status-actions"><button id="status-submit" class="btn btn-primary" type="submit">提交简历</button>'
+      + '<a class="btn btn-ghost" href="apply.html">去投递页看岗位详情</a></div></form></section>';
+
+    let resume = null;
+    const input = byId('status-resume');
+    const zone = byId('status-zone');
+    const showPicked = () => {
+      byId('status-file').classList.toggle('hidden', !resume);
+      if (resume) {
+        byId('status-file').innerHTML = '<span aria-hidden="true">▤</span><span><strong>' + esc(resume.name) + '</strong><small>'
+          + Math.ceil(resume.size / 1024) + ' KB</small></span><button id="status-remove" type="button" aria-label="移除简历">移除</button>';
+        byId('status-remove').onclick = () => { resume = null; input.value = ''; showPicked(); };
+      }
+      zone.classList.toggle('hidden', Boolean(resume));
+    };
+    const choose = (file) => {
+      if (!file) return;
+      const issue = !/\.(pdf|docx)$/i.test(file.name) ? '仅支持 PDF 或 DOCX 格式。'
+        : file.size === 0 ? '文件为空，请重新选择。'
+        : file.size > maxResumeBytes ? '简历不能超过 8 MB。' : '';
+      if (issue) { showError('status-upload-error', issue); return; }
+      resume = file;
+      showError('status-upload-error', '');
+      showPicked();
+    };
+    zone.onclick = () => input.click();
+    input.onchange = () => { choose(input.files[0]); input.value = ''; };
+    zone.ondragover = (event) => { event.preventDefault(); zone.classList.add('dragging'); };
+    zone.ondragleave = () => zone.classList.remove('dragging');
+    zone.ondrop = (event) => { event.preventDefault(); zone.classList.remove('dragging'); choose(event.dataTransfer.files[0]); };
+
+    byId('status-upload-form').onsubmit = async (event) => {
+      event.preventDefault();
+      const account = auth();
+      if (!account) { showError('status-upload-error', '登录已失效，请重新登录后再提交。'); return; }
+      if (!byId('status-job').value) { showError('status-upload-error', '请选择目标岗位。'); return; }
+      if (!resume) { showError('status-upload-error', '请上传 PDF 或 DOCX 简历。'); return; }
+      if (!byId('status-consent').checked) { showError('status-upload-error', '请先确认招聘评估资料的使用说明。'); return; }
+      const button = byId('status-submit');
+      button.disabled = true;
+      button.textContent = '正在提交…';
+      showError('status-upload-error', '');
+      try {
+        const body = new FormData();
+        body.append('resume', resume);
+        body.append('jobId', byId('status-job').value);
+        body.append('consent', 'true');
+        body.append('verifyLinks', 'false');
+        const response = await fetch('/api/applications', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + account.token },
+          body,
+        });
+        if (!response.ok) throw new Error(await readError(response));
+        const result = await response.json();
+        panel.innerHTML = '<section class="card status-card"><header class="status-head"><span class="status-stage">阶段 1</span>'
+          + '<div><h2>简历已提交</h2><p>' + esc(result.application?.jobTitle || '目标岗位') + '</p></div></header>'
+          + '<p class="status-desc">企业审核后会在这里更新下一步。</p>'
+          + '<div class="status-actions"><a class="btn btn-primary" href="status.html">查看我的状态</a>'
+          + '<a class="btn btn-ghost" href="applications.html">申请记录</a></div></section>';
+      } catch (error) {
+        showError('status-upload-error', error.message || '提交失败，请稍后重试。');
+        button.disabled = false;
+        button.textContent = '提交简历';
+      }
+    };
+  }
+
+  if (page === 'status') renderStatus();
+  else if (page === 'account') renderAccount();
   else if (page === 'apply') renderApply();
   else if (page === 'applications') renderApplications();
 })();
