@@ -20,7 +20,7 @@
   })();
 
   async function render() {
-    app.innerHTML = '<div class="screen-heading"><div><span class="eyebrow">企业端 · 招聘工作台</span><h1>邀请记录</h1>'
+    app.innerHTML = '<div class="screen-heading"><div><span class="eyebrow">天镜 招聘 · 企业端</span><h1>邀请记录</h1>'
       + '<p>AI 初面与真人面试的邀请都在这里回溯。过期状态在读取时计算，重发只顺延有效期并计数，不会产生第二条记录。</p></div>'
       + '<div class="screen-heading-actions"><a class="btn btn-ghost" href="screening.html#/board">返回查看简历</a></div></div>'
       + '<div id="invites-error" class="screen-error screen-hidden" role="alert"></div>'

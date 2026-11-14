@@ -30,24 +30,33 @@
 .ws-board { min-height: 240px; }
 
 /* ---------- 卡片翻页 ---------- */
-.ws-card-wrap { display: flex; justify-content: center; }
-.ws-card { width: min(100%, 900px); background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-xl); box-shadow: var(--shadow-card); padding: 26px; }
-.ws-card-head { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; border-bottom: 1px solid var(--line); padding-bottom: 18px; }
-.ws-card-head h2 { font-size: 28px; margin: 6px 0 4px; }
+.ws-card-wrap { display: flex; flex-direction: column; align-items: center; gap: 18px; }
+.ws-card { width: min(100%, 820px); background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-xl); box-shadow: var(--shadow-card); padding: 26px 28px; display: grid; gap: 15px; }
+.ws-card-head { display: flex; align-items: center; gap: 14px; border-bottom: 0; padding-bottom: 0; }
+.ws-avatar { width: 52px; height: 52px; flex: none; border-radius: 50%; background: linear-gradient(135deg, var(--orange), var(--orange-soft)); color: #fff; display: inline-flex; align-items: center; justify-content: center; font: 700 20px/1 var(--font-serif); }
+.ws-who { flex: 1; min-width: 0; }
+.ws-card-head h2 { font-size: 22px; margin: 0 0 2px; }
 .ws-card-head p { color: var(--ink-3); font-size: 13px; }
-.ws-card-score { text-align: right; display: flex; flex-direction: column; gap: 5px; align-items: flex-end; }
-.ws-card-score span { font-size: 11px; color: var(--ink-3); }
-.ws-card-score strong { font-size: 15px; }
-.ws-card-score small { color: var(--ink-3); font-size: 11px; }
-.ws-card-body { padding: 20px 0 8px; }
-.ws-resume-blocks { display: grid; gap: 16px; }
-.ws-resume-block h3 { font-size: 12px; font-family: var(--font-sans); color: var(--ink-3); letter-spacing: .06em; margin-bottom: 8px; text-transform: uppercase; }
+.ws-badge { flex: none; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: var(--r-pill); white-space: nowrap; }
+.ws-badge.green { background: var(--green-soft); color: var(--green); }
+.ws-badge.amber { background: var(--amber-soft); color: #a16a00; }
+.ws-badge.gray { background: var(--gray-1); color: var(--ink-3); }
+.ws-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--ink-3); font-size: 12.5px; }
+.ws-meta .ws-index { margin-left: auto; }
+.ws-card-body { padding: 0; }
+.ws-resume-blocks { display: grid; gap: 14px; }
+.ws-resume-block h3 { font-size: 12.5px; font-family: var(--font-sans); color: var(--ink-2); letter-spacing: .04em; margin-bottom: 6px; text-transform: none; }
 .ws-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.ws-list { margin: 0; padding-left: 18px; color: var(--ink-2); font-size: 13px; line-height: 1.7; }
+.ws-tags .chip { background: var(--peach-bg); border: 1px solid var(--peach-2); color: var(--orange-strong); font-size: 12.5px; padding: 5px 12px; border-radius: var(--r-pill); }
+.ws-list { margin: 0; padding-left: 18px; color: var(--ink-2); font-size: 14px; line-height: 1.7; }
 .ws-list li + li { margin-top: 4px; }
 .ws-empty-copy { color: var(--ink-3); font-size: 13px; line-height: 1.7; }
-.ws-card-actions { display: flex; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--line); padding-top: 18px; }
-.ws-card-nav { display: flex; align-items: center; justify-content: space-between; margin-top: 16px; color: var(--ink-3); font-size: 13px; }
+.ws-card-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; border-top: 0; padding-top: 4px; }
+.ws-card-nav { width: min(100%, 820px); display: flex; align-items: center; justify-content: space-between; margin-top: 0; color: var(--ink-3); font-size: 13px; }
+.ws-arrow { width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--gray-2); background: var(--paper); color: var(--ink-2); font-size: 16px; display: inline-flex; align-items: center; justify-content: center; }
+.ws-arrow:hover:not([disabled]) { border-color: var(--orange); color: var(--orange); }
+.ws-arrow[disabled] { opacity: .45; cursor: default; }
+.ws-counter { font-variant-numeric: tabular-nums; }
 .ws-inline-note { margin-top: 14px; padding: 10px 12px; border-left: 3px solid var(--orange); background: #fff7f1; border-radius: 0 8px 8px 0; font-size: 13px; color: #78563b; }
 
 /* ---------- 列表 ---------- */
@@ -145,3 +154,25 @@
   .ws-modal-body { padding: 16px; }
   .ws-subnav { overflow: auto; }
 }
+
+/* ---------- AI 结果三栏卡 ---------- */
+.ai-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.ai-card { background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-card); padding: 20px; display: grid; gap: 12px; cursor: pointer; }
+.ai-card:hover { border-color: var(--gray-3); }
+.ai-card-head { display: flex; align-items: center; gap: 12px; }
+.ai-card-head .ws-avatar { width: 40px; height: 40px; font-size: 15px; }
+.ai-who { flex: 1; min-width: 0; }
+.ai-who strong { display: block; font-size: 15px; }
+.ai-who small { color: var(--ink-3); font-size: 12.5px; }
+.ai-card-summary { background: var(--gray-1); border-radius: var(--r-md); padding: 11px 13px; font-size: 13px; color: var(--ink-2); line-height: 1.6; }
+.ai-card-metrics { display: grid; gap: 8px; min-height: 62px; align-content: start; }
+.ai-metric { display: grid; grid-template-columns: 74px 1fr 30px; align-items: center; gap: 10px; font-size: 12.5px; color: var(--ink-2); }
+.ai-metric .bar { height: 6px; border-radius: var(--r-pill); background: var(--gray-1); overflow: hidden; }
+.ai-metric .bar i { display: block; height: 100%; border-radius: var(--r-pill); background: var(--orange); }
+.ai-metric .bar i.warn { background: var(--amber); }
+.ai-metric .bar i.muted { background: var(--gray-3); }
+.ai-metric b { text-align: right; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.ai-card-muted { color: var(--ink-3); font-size: 12.5px; line-height: 1.6; }
+.ai-card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 1100px) { .ai-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .ai-grid { grid-template-columns: 1fr; } }

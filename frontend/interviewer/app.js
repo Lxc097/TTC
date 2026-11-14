@@ -163,8 +163,8 @@ I.play = svg('<path d="m8 5 11 7-11 7V5Z"/>');
 I.bulb = svg('<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-4 10.5c.8.7 1 1.6 1 2.5h6c0-.9.2-1.8 1-2.5A6 6 0 0 0 12 3Z"/>');
 I.timer = svg('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/>');
 
-function corgiBrand() {
-  return '<a class="brand" href="#/">' + I.dog + '<span>corgi</span></a>';
+function tianjingBrand() {
+  return '<a class="brand" href="#/"><img class="brand-mark" src="images/tianjing-logo.png" alt="天镜"><span>天镜</span></a>';
 }
 
 function navHtml(active) {
@@ -176,9 +176,9 @@ function navHtml(active) {
     ['/personal/', '面试者', active === 'candidate'],
     ['#/interviewer', '面试官', active === 'interviewer'],
     ['#/interviewer/analysis', '面试者分析', active === 'analysis'],
-    ['screening.html', '简历初筛', false]
+    ['screening.html', '招聘', false]
   ];
-  return '<div class="nav"><div class="wrap nav-in">' + corgiBrand() +
+  return '<div class="nav"><div class="wrap nav-in">' + tianjingBrand() +
     '<nav class="nav-links">' + links.map(l => '<a class="' + (l[2] ? 'active' : '') + '" href="' + l[0] + '">' + l[1] + '</a>').join('') + '</nav>' +
     '<div class="nav-right">' + right + '</div></div></div>';
 }

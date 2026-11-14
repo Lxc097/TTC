@@ -51,7 +51,7 @@
   }
 
   function pageHead() {
-    return '<div class="screen-heading"><div><span class="eyebrow">企业端 · 招聘工作台</span><h1>AI 面试结果</h1>'
+    return '<div class="screen-heading"><div><span class="eyebrow">天镜 招聘 · 企业端</span><h1>AI 面试结果</h1>'
       + '<p>按题看引用与推理，再决定是否进入真人面试。生理信号与行为信号只在双人面试间采集。</p></div>'
       + '<div class="screen-heading-actions"><a class="btn btn-ghost" href="screening.html#/board">返回查看简历</a></div></div>';
   }
@@ -82,6 +82,64 @@
     return 'pending';
   }
 
+  function statusTone(item) {
+    if (item.status === 'failed') return 'red';
+    if (item.status === 'ai_interview_completed' || item.status === 'hr_interview_invited' || item.status === 'closed') return 'green';
+    if (item.status === 'ai_interview_in_progress') return 'amber';
+    if (item.invitation?.state === 'expired') return 'red';
+    return 'gray';
+  }
+
+  function aiCard(item) {
+    const invitation = item.invitation || {};
+    const completed = item.status === 'ai_interview_completed' || item.status === 'hr_interview_invited' || item.status === 'closed';
+    const inProgress = item.status === 'ai_interview_in_progress' || invitation.state === 'accepted';
+    const name = item.candidateName || '候选人';
+    const summary = completed ? '已完成 AI 初面，逐题引用与分析可在结果页复核。'
+      : inProgress ? '候选人正在 AI 初面中，完成后这里会出现引用与分析。'
+      : invitation.state === 'expired' ? '邀请已过期，可在「邀请记录」里重发。'
+      : '已发出邀请，等待候选人进入初面。';
+    return '<article class="ai-card" data-open="' + esc(item.id) + '">'
+      + '<header class="ai-card-head">'
+      + '<span class="ws-avatar" aria-hidden="true">' + esc(String(name).slice(0, 1)) + '</span>'
+      + '<div class="ai-who"><strong>' + esc(name) + '</strong>'
+      + '<small>' + esc(item.jobTitle || '未填岗位') + ' · ' + esc(core.sourceLabel(item.source)) + '</small></div>'
+      + '<span class="ws-badge ' + statusTone(item) + '">' + esc(completed ? '已完成' : inProgress ? '进行中' : invitation.state === 'expired' ? '已过期' : '待进入') + '</span>'
+      + '</header>'
+      + '<p class="ai-card-summary">' + summary + '</p>'
+      + '<div class="ai-card-metrics" data-metrics="' + esc(item.id) + '"><span class="ai-card-muted">正在读取分析…</span></div>'
+      + '<div class="ws-meta"><span>邀请截止 ' + esc(core.deadlineLabel(invitation.expiresAt)) + '</span>'
+      + '<span>' + (item.aiResultSent ? '结果已发送' : '结果未发送') + '</span></div>'
+      + '<div class="ai-card-actions">'
+      + '<button type="button" class="btn btn-primary btn-sm" data-open="' + esc(item.id) + '">查看佐证</button>'
+      + '<a class="btn btn-ghost btn-sm" href="screening.html?id=' + encodeURIComponent(item.id) + '">简历与初筛</a>'
+      + '</div></article>';
+  }
+
+  async function fillCardMetrics(host, shown) {
+    const nodes = Array.from(host.querySelectorAll('[data-metrics]')).slice(0, 9);
+    await Promise.all(nodes.map(async (node) => {
+      const id = node.dataset.metrics;
+      try {
+        const detail = await core.api('/api/hr/applications/' + encodeURIComponent(id));
+        const evidence = detail?.formalInterview?.analysis?.answerEvidence || [];
+        if (!evidence.length) {
+          node.innerHTML = '<span class="ai-card-muted">还没有逐题引用；分析完成后显示回答具体度分布。</span>';
+          return;
+        }
+        const dist = { specific: 0, partial: 0, unclear: 0 };
+        evidence.forEach((entry) => { if (dist[entry.assessment] != null) dist[entry.assessment] += 1; });
+        const total = dist.specific + dist.partial + dist.unclear || 1;
+        const row = (key, label, tone) => '<div class="ai-metric"><span>' + label + '</span>'
+          + '<div class="bar"><i class="' + tone + '" style="width:' + Math.round(dist[key] / total * 100) + '%"></i></div>'
+          + '<b>' + dist[key] + '</b></div>';
+        node.innerHTML = row('specific', '回答具体', 'ok') + row('partial', '部分具体', 'warn') + row('unclear', '证据不足', 'muted');
+      } catch (_) {
+        node.innerHTML = '<span class="ai-card-muted">暂无法读取分析。</span>';
+      }
+    }));
+  }
+
   function drawList() {
     const host = byId('ai-list');
     if (!host) return;
@@ -90,25 +148,14 @@
       host.innerHTML = '<div class="ws-empty"><h2>还没有 AI 初面记录</h2><p>在「查看简历」里发送 AI 面试邀请后，候选人的回答与分析会出现在这里。</p><a class="btn btn-primary" href="screening.html#/board">去查看简历 →</a></div>';
       return;
     }
-    host.innerHTML = '<div class="screen-table-wrap"><table class="screen-table ws-table"><thead><tr>'
-      + '<th>候选人 / 岗位</th><th>状态</th><th>邀请截止</th><th>初面</th><th>结果发送</th><th></th></tr></thead><tbody>'
-      + shown.map((item) => {
-        const invitation = item.invitation || {};
-        const completed = item.status === 'ai_interview_completed' || item.status === 'hr_interview_invited' || item.status === 'closed';
-        return '<tr class="ws-row" data-open="' + esc(item.id) + '">'
-          + '<td><strong>' + esc(item.candidateName || '候选人') + '</strong><small>' + esc(item.jobTitle || '') + '</small></td>'
-          + '<td>' + core.stageChip(item.stage) + ' ' + esc(core.statusLabel(item.status)) + '</td>'
-          + '<td>' + esc(core.deadlineLabel(invitation.expiresAt)) + '</td>'
-          + '<td>' + (completed ? '已完成' : invitation.state === 'accepted' ? '进行中' : invitation.state === 'expired' ? '邀请已过期' : '等待候选人进入') + '</td>'
-          + '<td>' + (item.aiResultSent ? '已发送' : '未发送') + '</td>'
-          + '<td><button type="button" class="btn btn-ghost btn-sm" data-open="' + esc(item.id) + '">查看结果 →</button></td></tr>';
-      }).join('') + '</tbody></table></div>';
+    host.innerHTML = '<div class="ai-grid">' + shown.map(aiCard).join('') + '</div>';
     host.querySelectorAll('[data-open]').forEach((node) => {
       node.onclick = (event) => {
         event.stopPropagation();
         location.hash = '#/result/' + node.dataset.open;
       };
     });
+    fillCardMetrics(host, shown);
   }
 
   // ---------- 详情 ----------
