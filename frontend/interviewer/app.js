@@ -804,6 +804,7 @@ routes['/interviewer/room/:id'] = {
     connectInterviewer(state);
     setupMinutes(state);
     every(() => refreshStageChip(state), 1500);
+    every(() => rtcStatsTick(state), 8000);
     if ($('#copyLinkBtn')) $('#copyLinkBtn').addEventListener('click', () => {
       const url = location.origin + '/personal/?room=' + encodeURIComponent(state.code);
       copyText(url, '链接已复制');
@@ -884,6 +885,42 @@ const RTC_ICE_SERVERS = [
 ];
 
 let rtcCands = { host: 0, srflx: 0, relay: 0, other: 0 };
+let lastStats = null;
+
+/* 每 8 秒回传一次收流统计：帧率、码率、丢包、抖动、RTT、走的哪条候选 */
+function rtcStatsTick(state) {
+  const pc = state.pc;
+  if (!pc || pc.connectionState !== 'connected') return;
+  if (!state.ws || state.ws.readyState !== 1) return;
+  pc.getStats(null).then((report) => {
+    const byId = {};
+    const info = { pair: null, vid: null };
+    report.forEach((s) => { byId[s.id] = s; });
+    report.forEach((s) => {
+      if (s.type === 'candidate-pair' && s.selected && s.state === 'succeeded') {
+        const local = byId[s.localCandidateId] || {};
+        const remote = byId[s.remoteCandidateId] || {};
+        info.pair = {
+          lt: local.candidateType || '?', rt: remote.candidateType || '?',
+          rtt: s.currentRoundTripTime ? Math.round(s.currentRoundTripTime * 1000) : null,
+        };
+      }
+      if (s.type === 'inbound-rtp' && (s.kind === 'video' || s.mediaType === 'video')) {
+        const prev = lastStats;
+        const now = s.timestamp || Date.now();
+        const kbps = (prev && now > prev.ts)
+          ? Math.round((s.bytesReceived - prev.bytes) * 8 / (now - prev.ts)) : null;
+        lastStats = { bytes: s.bytesReceived, ts: now };
+        info.vid = {
+          fps: s.framesPerSecond, w: s.frameWidth, h: s.frameHeight,
+          lost: s.packetsLost, jitter: s.jitter ? Math.round(s.jitter * 1000) : null,
+          kbps: kbps,
+        };
+      }
+    });
+    try { state.ws.send(JSON.stringify({ type: 'diag', ev: 'stats', data: info })); } catch (_) {}
+  }).catch(() => {});
+}
 
 /* 把连接诊断回传给服务端日志，卡在哪一步一眼能看出来 */
 function rtcDiag(state, ev) {

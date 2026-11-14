@@ -17,6 +17,7 @@
     microphoneGeneration: 0,
     cameraStream: null,
     frameTimer: null,
+    statsTimer: null,
     pc: null,
     pcPending: [],
     pcLive: false,
@@ -107,6 +108,40 @@
   ];
 
   let rtcCands = { host: 0, srflx: 0, relay: 0, other: 0 };
+  let lastStats = null;
+
+  /* 每 8 秒回传一次发送统计：编码帧率、码率、被什么限制（带宽/CPU/无） */
+  function rtcStatsTick() {
+    const pc = state.pc;
+    if (!pc || pc.connectionState !== 'connected' || !wsReady()) return;
+    pc.getStats(null).then((report) => {
+      const byId = {};
+      const info = { pair: null, out: null };
+      report.forEach((s) => { byId[s.id] = s; });
+      report.forEach((s) => {
+        if (s.type === 'candidate-pair' && s.selected && s.state === 'succeeded') {
+          const local = byId[s.localCandidateId] || {};
+          const remote = byId[s.remoteCandidateId] || {};
+          info.pair = {
+            lt: local.candidateType || '?', rt: remote.candidateType || '?',
+            rtt: s.currentRoundTripTime ? Math.round(s.currentRoundTripTime * 1000) : null,
+          };
+        }
+        if (s.type === 'outbound-rtp' && (s.kind === 'video' || s.mediaType === 'video')) {
+          const prev = lastStats;
+          const now = s.timestamp || Date.now();
+          const kbps = (prev && now > prev.ts)
+            ? Math.round((s.bytesSent - prev.bytes) * 8 / (now - prev.ts)) : null;
+          lastStats = { bytes: s.bytesSent, ts: now };
+          info.out = {
+            fps: s.framesPerSecond, w: s.frameWidth, h: s.frameHeight,
+            limit: s.qualityLimitationReason, kbps: kbps,
+          };
+        }
+      });
+      send({ type: 'diag', ev: 'stats', data: info });
+    }).catch(() => { /* 统计失败不影响面试 */ });
+  }
 
   /* 把连接诊断回传给服务端日志：用户不用看懂控制台，我们也能知道卡在哪一步 */
   function rtcDiag(ev) {
@@ -221,6 +256,8 @@
     if (state.wakeLock) { try { state.wakeLock.release(); } catch (_) { /* 已释放 */ } state.wakeLock = null; }
     if (state.frameTimer) clearInterval(state.frameTimer);
     state.frameTimer = null;
+    if (state.statsTimer) clearInterval(state.statsTimer);
+    state.statsTimer = null;
     if (state.clipTimer) clearTimeout(state.clipTimer);
     state.clipTimer = null;
     if (state.clipRecorder && state.clipRecorder.state !== 'inactive') state.clipRecorder.stop();
@@ -634,6 +671,8 @@
       // 面试官已经在房间里的话，开摄即发起点对点直连
       rtcDiag('camera-start');
       rtcOffer();
+      if (state.statsTimer) clearInterval(state.statsTimer);
+      state.statsTimer = setInterval(rtcStatsTick, 8000);
       // 一场面试几十分钟，手机上尽量别让屏幕自动熄灭
       try { if (navigator.wakeLock) state.wakeLock = await navigator.wakeLock.request('screen'); } catch (_) { state.wakeLock = null; }
     } catch (err) { stopCamera(); text('camera-status', cameraErrorText(err)); }
