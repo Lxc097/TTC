@@ -226,10 +226,19 @@
         state.pcTimer = null;
         text('camera-status', '画面已直连面试官（点对点，不经过服务器）。');
         rtcDiag('connected');
+      } else if (pc.connectionState === 'disconnected') {
+        state.pcLive = false;
+        text('camera-status', '点对点画面暂时中断，已切换逐帧画面。');
+        rtcDiag('disconnected');
       } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        const retry = pc.connectionState === 'failed' && state.pcRetries < 2;
+        rtcDiag('failed');
         rtcReset();
         text('camera-status', '点对点直连没打通（路由器禁止设备互访或多层 NAT 都会这样），已切回逐帧画面。');
-        rtcDiag('failed');
+        if (retry) {
+          state.pcRetries += 1;
+          setTimeout(() => rtcOffer(), 1000);
+        }
       }
     };
     return pc;
@@ -701,7 +710,7 @@
           context.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, 320, 240);
           send({type:'frame',img:canvas.toDataURL('image/jpeg', live ? .4 : .45)});
         } catch (_) { /* No invented frame on capture failure. */ }
-      }, 150);
+      }, 100);
       text('camera-status','摄像头已开启，画面按房间协议发送；你可随时停止。');
       text('camera-button','停止摄像头');
       // 面试官已经在房间里的话，开摄即发起点对点直连
