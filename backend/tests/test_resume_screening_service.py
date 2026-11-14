@@ -153,7 +153,8 @@ class ScreeningServiceTests(unittest.TestCase):
         ):
             with self.assertRaises(service.ScreeningError) as captured:
                 service.screen_resume(RESUME, JOB)
-        self.assertEqual(call.call_count, 3)
+        self.assertEqual(call.call_count, 1)
+        self.assertEqual(captured.exception.attempts, 1)
         self.assertNotIn("private resume text", str(captured.exception))
         self.assertNotIn("dummy-test-key", str(captured.exception))
 

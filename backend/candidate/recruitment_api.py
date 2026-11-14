@@ -23,6 +23,7 @@ from candidate import recruitment_store as repo
 from candidate.recruitment_evidence import verify_supplied_links
 from candidate.interview_analysis_service import analyze_interview
 from candidate.recruitment_resume import MAX_FILE_BYTES, ResumeError, parse_resume_with_timeout, validate_file
+from jianli.ocr import recognize_scanned_pdf
 from candidate.resume_screening_prompt import PROMPT_VERSION
 from candidate.resume_screening_service import ScreeningError, config as screening_config, screen_resume
 from shared.store import STORE, default_questions
@@ -192,6 +193,8 @@ def _human_interview_dto(row: dict) -> dict | None:
 
 def _hr_dto(row: dict, detail: bool = False) -> dict:
     screening = json.loads(row["report_json"]) if row["report_json"] else None
+    profile = screening.get("candidateProfile") if screening else None
+    profile = profile if isinstance(profile, dict) else {}
     parsed_resume = json.loads(row["parsed_json"]) if detail and row["parsed_json"] else None
     imported = row["source"] == "hr_import"
     room = STORE.get_room(row["room_code"]) if row["room_code"] else None
@@ -220,10 +223,12 @@ def _hr_dto(row: dict, detail: bool = False) -> dict:
                       if room and room.interviewer_ticket else None}
     result = {"id": row["id"], "jobId": row["job_id"], "jobTitle": row["job_title"],
               "companyName": row["company_name"],
-              "candidateName": (parsed_resume or {}).get("name") or row["candidate_name"],
-              "candidateEmail": ((parsed_resume or {}).get("contact") or {}).get("email") if imported
+              "candidateName": profile.get("name") or (parsed_resume or {}).get("name") or row["candidate_name"],
+              "candidateEmail": (profile.get("email") or ((parsed_resume or {}).get("contact") or {}).get("email")) if imported
               else row["candidate_email"], "createdAt": row["created_at"],
               "source": row["source"],
+              "attachmentCount": row["attachment_count"],
+              "candidateProfile": profile or None,
               "status": row["status"],
               "stage": pipeline.stage_of(row["status"]),
               "stageLabel": pipeline.stage_label(pipeline.stage_of(row["status"])),
@@ -245,6 +250,7 @@ def _hr_dto(row: dict, detail: bool = False) -> dict:
                                          "attempts": row["attempts"], "promptTokens": row["prompt_tokens"],
                                          "completionTokens": row["completion_tokens"]},
                        "evidence": repo.list_evidence(row["id"]),
+                       "attachments": repo.list_attachments(row["id"]),
                        "corrections": repo.list_corrections(row["id"]),
                        "formalInterview": repo.formal_interview_summary(row["id"]),
                        "interviewRoomReport": repo.interview_report(row["id"]),
@@ -264,7 +270,12 @@ def _process_one(app_id: str) -> None:
         else:
             data = Path(row["file_path"]).read_bytes()
             kind = "pdf" if row["original_name"].lower().endswith(".pdf") else "docx"
-            parsed = parse_resume_with_timeout(kind, data)
+            try:
+                parsed = parse_resume_with_timeout(kind, data)
+            except ResumeError as exc:
+                if kind != "pdf" or "没有提取到足够的可读文字" not in str(exc):
+                    raise
+                parsed = recognize_scanned_pdf(data)
             repo.save_parsed_resume(app_id, parsed["rawText"], parsed)
     except (ResumeError, OSError, ValueError) as exc:
         repo.save_resume_failure(app_id, str(exc)[:180])
@@ -279,7 +290,8 @@ def _process_one(app_id: str) -> None:
                             meta["attempts"], meta.get("promptTokens"), meta.get("completionTokens"))
     except ScreeningError as exc:
         settings = screening_config()
-        repo.save_screening_failure(app_id, str(exc)[:180], settings["model"], PROMPT_VERSION, 3)
+        repo.save_screening_failure(app_id, str(exc)[:180], settings["model"], PROMPT_VERSION,
+                                    exc.attempts or 1)
 
 
 def _process_interview_analysis(app_id: str) -> None:

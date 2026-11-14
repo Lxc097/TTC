@@ -16,7 +16,7 @@
 3. 候选人读取 GET /api/applications/my 或 /api/applications/{id}，只得到进度、处理错误及邀请入口；可向 POST /api/applications/{id}/corrections 提交本人申请的更正说明。HR 通过 GET /api/hr/applications、GET /api/hr/applications/{id} 查看本企业的解析结果、内部报告、更正说明与人工复核信息；原件通过受控的 /api/hr/applications/{id}/resume 下载。
 4. HR 向 POST /api/hr/applications/{id}/review 发送 decision=invite、verify 或 hold 及 notes。invite 创建同一申请唯一邀请。正式 AI 初面走下述 /ai-interview/ 流程；原有双人房间仍可用 POST /api/applications/{id}/interview/start 取得专属票据并进入 /personal/。
 
-企业端另可在简历初筛页点击「录入 PDF 简历」，选择本企业岗位、确认已获得招聘评估授权，再上传最大 8 MB 的 PDF。接口为 POST /api/hr/resumes/import（multipart：jobId、candidateName 可选、permissionConfirmed=true、resume），返回 202 与申请 ID。它写入同一个本地 SQLite applications/resumes 表并进入原有解析、AI 初筛队列；applications.source 区分 candidate_portal 与 hr_import，uploaded_by 记录录入人。GET /api/hr/applications 的 counts 返回本企业 total、candidatePortal、hrImport；旧数据库启动时自动补列，历史记录归为个人投递。企业录入的简历未关联候选人账号，不出现在个人端，暂不能发送线上初面邀请；HR 仍可核验或暂缓。到期清理同时移除录入文件及内部占位身份。
+企业端简历初筛页支持一次拖入最多 30 个 PDF/ZIP，选择本企业岗位并确认招聘评估授权后，调用 POST /api/hr/resumes/batch 写入本地 SQLite 和原有初筛队列。每个 ZIP 对应一名候选人，PDF 主简历进入 AI 识别，佐证材料与申请一一关联供 HR 查看；扫描版 PDF 自动尝试 DeepSeek-OCR。详情、接口和安全边界见 backend/jianli/README.md。原单份 POST /api/hr/resumes/import 继续兼容。applications.source 区分 candidate_portal 与 hr_import，uploaded_by 记录录入人；企业导入记录不出现在个人端，暂不能发送线上初面邀请。到期清理同时移除录入文件及内部占位身份。
 
 除注册、登录和公开岗位列表外，招聘 API 使用 Bearer 令牌；候选人 API 和 HR API 按角色及企业/本人过滤，不能仅靠前端隐藏字段。密码采用加盐派生哈希，令牌只存哈希。数据在 SQLite 与服务端目录中持久化，默认 .local-data/；RECRUITMENT_DATA_DIR 可更换目录，RECRUITMENT_RETENTION_DAYS 控制定期清理。简历及 JD 均视为不可信数据，模型输出经严格 Schema 和原文证据检查。没有真实密钥、格式错误或模型超时时会记录失败供 HR 人工处理，不生成虚构报告或自动拒绝。
 

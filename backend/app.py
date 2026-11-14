@@ -21,6 +21,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from shared import config
 from interviewer.api import router
 from candidate.recruitment_api import router as recruitment_router, start_worker, stop_worker
+from jianli.api import router as jianli_router
 from candidate.formal_interview_api import router as formal_interview_router
 
 BASE = Path(__file__).resolve().parent
@@ -45,13 +46,16 @@ app = FastAPI(title="耳语 · 面试官后端", version="0.1")
 
 @app.middleware("http")
 async def private_response_headers(request: Request, call_next):
-    if request.method == "POST" and request.url.path == "/api/applications":
+    if request.method == "POST" and request.url.path in ("/api/applications", "/api/hr/resumes/batch"):
         try:
             declared_size = int(request.headers.get("content-length", "0"))
         except ValueError:
             declared_size = 0
-        if declared_size > 8 * 1024 * 1024 + 128 * 1024:
-            return JSONResponse(status_code=413, content={"detail": "简历文件不能超过 8 MB。"},
+        batch = request.url.path == "/api/hr/resumes/batch"
+        limit = (96 if batch else 8) * 1024 * 1024 + 128 * 1024
+        if declared_size > limit:
+            message = "本批次上传不能超过 96 MB。" if batch else "简历文件不能超过 8 MB。"
+            return JSONResponse(status_code=413, content={"detail": message},
                                 headers={"Cache-Control": "no-store",
                                          "X-Content-Type-Options": "nosniff",
                                          "Referrer-Policy": "no-referrer"})
@@ -77,6 +81,7 @@ app.add_middleware(
 
 app.include_router(router)
 app.include_router(recruitment_router)
+app.include_router(jianli_router)
 app.include_router(formal_interview_router)
 
 

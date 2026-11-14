@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import os
+import io
 import sys
 import tempfile
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -248,6 +250,46 @@ class RecruitmentApiTests(unittest.TestCase):
                          files={"resume": ("x.pdf", PDF, "application/pdf")}).status_code, 404)
         self.assertEqual(self.client.post(path, headers=self.auth(candidate), data=fields,
                          files={"resume": ("x.pdf", PDF, "application/pdf")}).status_code, 403)
+
+
+    def test_batch_zip_binds_proofs_to_one_private_resume(self) -> None:
+        hr = self.register("HR", "hr@example.test", "hr", "Company One")
+        other = self.register("Other HR", "other@example.test", "hr", "Company Two")
+        job = self.create_job(hr)
+        proof = b"\x89PNG\r\n\x1a\n" + b"fixture-proof"
+        package = io.BytesIO()
+        with zipfile.ZipFile(package, "w") as archive:
+            archive.writestr("person/简历.pdf", PDF)
+            archive.writestr("person/学历证明.png", proof)
+            archive.writestr("person/项目证明.pdf", PDF)
+        fields = {"jobId": job["id"], "permissionConfirmed": "true"}
+        response = self.client.post("/api/hr/resumes/batch", headers=self.auth(hr),
+            data=fields, files=[("files", ("one.pdf", PDF, "application/pdf")),
+                                ("files", ("person.zip", package.getvalue(), "application/zip"))])
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertEqual(len(response.json()["items"]), 2)
+        self.assertEqual(response.json()["errors"], [])
+        self.assertEqual(response.json()["counts"]["hrImport"], 2)
+        imported = response.json()["items"][1]["application"]
+        self.assertEqual(imported["attachmentCount"], 2)
+        detail = self.client.get(f"/api/hr/applications/{imported['id']}",
+                                 headers=self.auth(hr)).json()
+        self.assertEqual(len(detail["attachments"]), 2)
+        proof_id = next(item["id"] for item in detail["attachments"]
+                        if item["contentType"] == "image/png")
+        proof_path = f"/api/hr/applications/{imported['id']}/attachments/{proof_id}"
+        self.assertEqual(self.client.get(proof_path, headers=self.auth(hr)).content, proof)
+        self.assertEqual(self.client.get(proof_path, headers=self.auth(other)).status_code, 404)
+        self.assertEqual(self.client.get(f"/api/hr/applications/{imported['id']}",
+                         headers=self.auth(other)).status_code, 404)
+        bad = io.BytesIO()
+        with zipfile.ZipFile(bad, "w") as archive:
+            archive.writestr("../resume.pdf", PDF)
+        rejected = self.client.post("/api/hr/resumes/batch", headers=self.auth(hr),
+            data=fields, files={"files": ("bad.zip", bad.getvalue(), "application/zip")})
+        self.assertEqual(rejected.status_code, 202)
+        self.assertEqual(rejected.json()["items"], [])
+        self.assertEqual(len(rejected.json()["errors"]), 1)
 
 
 if __name__ == "__main__":

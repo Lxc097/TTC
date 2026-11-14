@@ -9,6 +9,7 @@
   const app = document.getElementById('screen-app');
   const byId = (id) => document.getElementById(id);
   const esc = core.esc;
+  let attachmentPreviewUrl = null;
 
   const state = {
     entries: [],
@@ -155,8 +156,8 @@
       + '<button type="button" data-view="cards" class="' + (state.view === 'cards' ? 'on' : '') + '">卡片翻页</button>'
       + '<button type="button" data-view="list" class="' + (state.view === 'list' ? 'on' : '') + '">列表</button></div>';
     app.innerHTML = subnav('board')
-      + pageHead('查看简历', '先看 AI 初筛的岗位匹配证据，再决定邀请或暂缓。顺序固定为 能力 → 竞赛 → 项目。',
-        '<button id="screen-new-import" class="btn btn-ghost" type="button">录入 PDF 简历</button><button id="screen-new-job" class="btn btn-primary" type="button">发布岗位</button>')
+      + pageHead('查看简历', '批量拖入 PDF 或一人一包的 ZIP，识别后再看 AI 初筛证据。',
+        '<button id="screen-new-import" class="btn btn-ghost" type="button">批量导入简历</button><button id="screen-new-job" class="btn btn-primary" type="button">发布岗位</button>')
       + jobFormHtml() + importFormHtml()
       + '<p id="screen-import-success" class="screen-success screen-hidden" role="status"></p>'
       + '<section class="screen-source-stats" aria-label="简历来源统计">'
@@ -185,22 +186,58 @@
     return '<form id="screen-job-form" class="card screen-job-form screen-hidden"><h2>发布招聘岗位</h2><p>岗位说明将作为简历初筛和后续面试的依据。</p><label for="new-job-title">岗位名称</label><input id="new-job-title" class="input" required maxlength="120" placeholder="例如：后端开发工程师"><label for="new-job-description">岗位职责与必备要求</label><textarea id="new-job-description" class="input" required minlength="30" maxlength="8000" rows="6" placeholder="写明职责、必备技能和经验要求，至少 30 字"></textarea><p id="screen-job-error" class="screen-error screen-hidden" role="alert"></p><div class="screen-form-actions"><button class="btn btn-primary" type="submit" id="screen-job-submit">发布岗位</button><button class="btn btn-ghost" type="button" id="screen-job-cancel">取消</button></div></form>';
   }
   function importFormHtml() {
-    return '<form id="screen-import-form" class="card screen-job-form screen-hidden"><h2>录入企业已有简历</h2><p>选择本企业岗位，上传 PDF 后写入本地数据库，并进入与个人投递相同的解析和初筛队列。</p><label for="import-job">目标岗位</label><select id="import-job" class="input" required><option value="">请选择岗位</option></select><label for="import-name">候选人姓名（可选）</label><input id="import-name" class="input" maxlength="100" placeholder="不填则暂用文件名"><label for="import-resume">PDF 简历（最大 8 MB）</label><input id="import-resume" class="input" type="file" accept=".pdf,application/pdf" required><label class="screen-check"><input id="import-permission" type="checkbox" required><span>我确认企业已获得将此简历用于当前岗位招聘评估的授权。</span></label><p id="screen-import-error" class="screen-error screen-hidden" role="alert" tabindex="-1"></p><div class="screen-form-actions"><button class="btn btn-primary" type="submit" id="screen-import-submit">写入简历</button><button class="btn btn-ghost" type="button" id="screen-import-cancel">取消</button></div></form>';
+    return '<form id="screen-import-form" class="card screen-job-form"><h2>批量导入简历</h2>'
+      + '<p>一次选择岗位，再拖入多份 PDF 或 ZIP。每个 ZIP 对应一人，内含一份 PDF 简历及 PDF/JPG/PNG 佐证材料；后台会生成信息条和初筛报告。</p>'
+      + '<label for="import-job">目标岗位</label><select id="import-job" class="input" required><option value="">请选择岗位</option></select>'
+      + '<button id="screen-dropzone" class="screen-dropzone" type="button"><strong>拖放 PDF / ZIP 到这里</strong><span>或点击选择文件 · 最多 30 个</span><small>PDF 每份最多 8 MB；ZIP 每包最多 32 MB、只放一人的材料</small></button>'
+      + '<input id="import-files" type="file" accept=".pdf,.zip,application/pdf,application/zip" multiple class="screen-hidden" aria-label="选择 PDF 或 ZIP 文件">'
+      + '<ul id="import-files-list" class="screen-selected-files" aria-live="polite"></ul>'
+      + '<label class="screen-check"><input id="import-permission" type="checkbox" required><span>我确认企业已获得将这些简历用于当前岗位招聘评估的授权。</span></label>'
+      + '<p id="screen-import-error" class="screen-error screen-hidden" role="alert" tabindex="-1"></p>'
+      + '<div class="screen-form-actions"><button class="btn btn-primary" type="submit" id="screen-import-submit">写入并开始识别</button><button class="btn btn-ghost" type="button" id="screen-import-cancel">清空</button></div></form>';
   }
 
   function bindBoardEvents() {
     const jobForm = byId('screen-job-form');
     const importForm = byId('screen-import-form');
+    let selectedFiles = [];
+    const renderSelectedFiles = () => {
+      byId('import-files-list').innerHTML = selectedFiles.map((file, index) => '<li><span><strong>' + esc(file.name) + '</strong><small>' + (file.size / 1048576).toFixed(1) + ' MB</small></span><button type="button" data-remove-file="' + index + '" aria-label="移除 ' + esc(file.name) + '">移除</button></li>').join('');
+      byId('import-files-list').querySelectorAll('[data-remove-file]').forEach((button) => {
+        button.onclick = () => { selectedFiles.splice(Number(button.dataset.removeFile), 1); renderSelectedFiles(); };
+      });
+    };
+    const addFiles = (incoming) => {
+      const errors = [];
+      for (const file of Array.from(incoming || [])) {
+        const limit = /\.zip$/i.test(file.name) ? 32 * 1048576 : 8 * 1048576;
+        if (!/\.(pdf|zip)$/i.test(file.name)) errors.push(file.name + '：仅支持 PDF 或 ZIP');
+        else if (file.size > limit) errors.push(file.name + '：文件超出大小限制');
+        else if (selectedFiles.some((item) => item.name === file.name)) errors.push(file.name + '：已有同名文件，请改名后再选');
+        else if (selectedFiles.length >= 30 || selectedFiles.reduce((sum, item) => sum + item.size, 0) + file.size > 96 * 1048576) errors.push('一次最多 30 个文件、总量不超过 96 MB');
+        else selectedFiles.push(file);
+      }
+      renderSelectedFiles();
+      showError('screen-import-error', errors.join('；'));
+    };
     byId('screen-new-job').onclick = () => { jobForm.classList.remove('screen-hidden'); byId('new-job-title').focus(); };
     byId('screen-job-cancel').onclick = () => jobForm.classList.add('screen-hidden');
-    byId('screen-new-import').onclick = () => { importForm.classList.remove('screen-hidden'); byId('screen-import-success').classList.add('screen-hidden'); byId('import-job').focus(); };
-    byId('screen-import-cancel').onclick = () => importForm.classList.add('screen-hidden');
+    byId('screen-new-import').onclick = () => { importForm.scrollIntoView({ behavior: 'smooth', block: 'start' }); byId('screen-dropzone').focus(); };
+    byId('screen-import-cancel').onclick = () => { importForm.reset(); selectedFiles = []; renderSelectedFiles(); showError('screen-import-error', ''); };
+    byId('screen-dropzone').onclick = () => byId('import-files').click();
+    byId('import-files').onchange = (event) => { addFiles(event.target.files); event.target.value = ''; };
+    ['dragenter', 'dragover'].forEach((name) => byId('screen-dropzone').addEventListener(name, (event) => {
+      event.preventDefault(); byId('screen-dropzone').classList.add('is-dragging');
+    }));
+    ['dragleave', 'drop'].forEach((name) => byId('screen-dropzone').addEventListener(name, (event) => {
+      event.preventDefault(); byId('screen-dropzone').classList.remove('is-dragging');
+      if (name === 'drop') addFiles(event.dataTransfer.files);
+    }));
     importForm.onsubmit = async (event) => {
       event.preventDefault();
       showError('screen-import-error', '');
-      const file = byId('import-resume').files[0];
-      if (!file || !/\.pdf$/i.test(file.name) || file.size > 8 * 1024 * 1024) {
-        showError('screen-import-error', '请选择不超过 8 MB 的 PDF 简历。');
+      if (!selectedFiles.length) {
+        showError('screen-import-error', '请先拖入或选择简历文件。');
         byId('screen-import-error').focus();
         return;
       }
@@ -208,20 +245,29 @@
       button.disabled = true; button.textContent = '正在写入…';
       const body = new FormData();
       body.append('jobId', byId('import-job').value);
-      body.append('candidateName', byId('import-name').value.trim());
       body.append('permissionConfirmed', String(byId('import-permission').checked));
-      body.append('resume', file);
+      selectedFiles.forEach((file) => body.append('files', file));
       try {
-        const result = await core.api('/api/hr/resumes/import', { method: 'POST', body });
-        importForm.reset(); importForm.classList.add('screen-hidden');
+        const result = await core.api('/api/hr/resumes/batch', { method: 'POST', body });
+        const accepted = Array.isArray(result.items) ? result.items : [];
+        const failures = Array.isArray(result.errors) ? result.errors : [];
+        const completedNames = new Set(accepted.map((item) => item.file));
+        selectedFiles = selectedFiles.filter((file) => !completedNames.has(file.name));
+        renderSelectedFiles();
         const notice = byId('screen-import-success');
-        notice.innerHTML = '简历已写入，正在解析和初筛。<a href="screening.html?id=' + encodeURIComponent(result.application.id) + '">查看详情 →</a>';
-        notice.classList.remove('screen-hidden');
-        await loadList();
+        if (accepted.length) {
+          notice.innerHTML = '已录入 ' + accepted.length + ' 份简历，正在后台识别。<a href="screening.html?id=' + encodeURIComponent(accepted[0].application.id) + '">查看第一份 →</a>';
+          notice.classList.remove('screen-hidden');
+          await loadList({ silent: true });
+        }
+        if (failures.length) {
+          showError('screen-import-error', failures.map((item) => item.file + '：' + item.message).join('；'));
+          byId('screen-import-error').focus();
+        } else if (accepted.length) importForm.reset();
       } catch (error) {
         showError('screen-import-error', error.message || '写入失败。');
         byId('screen-import-error').focus();
-      } finally { button.disabled = false; button.textContent = '写入简历'; }
+      } finally { button.disabled = false; button.textContent = '写入并开始识别'; }
     };
     jobForm.onsubmit = async (event) => {
       event.preventDefault();
@@ -590,8 +636,10 @@
   }
 
   function drawDetail(item) {
+    if (attachmentPreviewUrl) { URL.revokeObjectURL(attachmentPreviewUrl); attachmentPreviewUrl = null; }
     const sourceReport = core.reportOf(item);
     const report = sourceReport ? { ...sourceReport, externalEvidence: item.evidence || sourceReport.externalEvidence } : null;
+    const profile = report?.candidateProfile || {};
     const resume = item.parsedResume || {};
     const match = report?.jobMatch || {};
     const recommendation = report?.screeningRecommendation || item.recommendation;
@@ -642,6 +690,75 @@
           + (item.screeningError ? '<small>' + esc(item.screeningError) + '</small>' : '')
           + (item.screeningStatus === 'failed' ? '<button type="button" id="screen-retry-screening" class="btn btn-ghost btn-sm">重新运行初筛</button>' : '') + '</div>')
       + '</section></div></div>';
+
+    if (item.resumeStatus === 'failed') {
+      const panel = byId('screen-detail').querySelector('.screen-detail-column .screen-panel');
+      const failure = document.createElement('div');
+      failure.className = 'screen-pending';
+      const reason = document.createElement('p');
+      reason.textContent = item.resumeError || '简历识别失败，可重新识别。';
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.id = 'screen-retry-resume';
+      retry.className = 'btn btn-ghost btn-sm';
+      retry.textContent = '重新识别简历';
+      failure.append(reason, retry);
+      panel.append(failure);
+    }
+    if (item.source === 'hr_import') {
+      const education = profile.education?.length ? profile.education : (resume.education || []).slice(0, 2);
+      const work = profile.workExperience?.length ? profile.workExperience : (resume.workExperience || []).slice(0, 2);
+      const skills = profile.skills?.length ? profile.skills : (resume.skills || []).slice(0, 8);
+      const aiFilled = Boolean(profile.name || profile.email || profile.phone || profile.education?.length || profile.workExperience?.length || profile.skills?.length);
+      const profileSection = document.createElement('section');
+      profileSection.className = 'card screen-panel screen-auto-profile';
+      profileSection.innerHTML = '<div class="screen-panel-heading"><h2>简历信息条</h2><span class="screen-state">' + (aiFilled ? 'AI 已识别' : item.screeningStatus === 'failed' ? '待人工核对' : item.screeningStatus === 'completed' ? '基础解析完成' : '识别中') + '</span></div>'
+        + '<p class="screen-panel-lead">AI 从简历原文摘录，缺失字段留空；请以原件核对。</p>'
+        + '<div class="screen-profile-grid"><div><span>姓名</span><strong>' + esc(profile.name || resume.name || item.candidateName || '未识别') + '</strong></div>'
+        + '<div><span>邮箱</span><strong>' + esc(profile.email || resume.contact?.email || '未识别') + '</strong></div>'
+        + '<div><span>电话</span><strong>' + esc(profile.phone || resume.contact?.phone || '未识别') + '</strong></div></div>'
+        + '<h3>教育</h3>' + core.listStrings(education, '未识别到教育经历。')
+        + '<h3>工作经历</h3>' + core.listStrings(work, '未识别到工作经历。')
+        + '<h3>技能</h3>' + core.listStrings(skills, '未识别到技能。');
+      const attachments = Array.isArray(item.attachments) ? item.attachments : [];
+      const proofSection = document.createElement('section');
+      proofSection.className = 'card screen-panel screen-proof-panel';
+      proofSection.innerHTML = '<div class="screen-panel-heading"><h2>关联佐证材料</h2><span>' + attachments.length + ' 份</span></div>'
+        + '<p class="screen-panel-lead">材料与此人简历绑定保存在本地数据库，仅供 HR 人工查看；尚未自动核验真实性。</p>'
+        + (attachments.length ? '<ul class="screen-proof-list">' + attachments.map((entry) => '<li><span><strong>' + esc(entry.name) + '</strong><small>' + (entry.sizeBytes / 1048576).toFixed(1) + ' MB</small></span><button type="button" class="btn btn-ghost btn-sm" data-attachment="' + esc(entry.id) + '">查看</button></li>').join('') + '</ul>' : '<p class="ws-empty-copy">此记录没有佐证材料。</p>');
+      byId('screen-detail').querySelector('.screen-detail-column .screen-panel').after(profileSection, proofSection);
+      if (attachments.length) {
+        const dialog = document.createElement('dialog');
+        dialog.className = 'screen-preview-dialog';
+        dialog.innerHTML = '<div class="screen-preview-heading"><strong id="screen-preview-title"></strong><button type="button" class="btn btn-ghost btn-sm" id="screen-preview-close">关闭</button></div><div id="screen-preview-body" class="screen-preview-body"></div><a id="screen-preview-download" class="btn btn-ghost btn-sm">下载原件</a>';
+        byId('screen-detail').append(dialog);
+        dialog.querySelector('#screen-preview-close').onclick = () => dialog.close();
+        dialog.addEventListener('close', () => { if (attachmentPreviewUrl) { URL.revokeObjectURL(attachmentPreviewUrl); attachmentPreviewUrl = null; } });
+        proofSection.querySelectorAll('[data-attachment]').forEach((button) => {
+          button.onclick = async () => {
+            const entry = attachments.find((value) => value.id === button.dataset.attachment);
+            if (!entry) return;
+            button.disabled = true;
+            try {
+              const response = await fetch('/api/hr/applications/' + encodeURIComponent(item.id) + '/attachments/' + encodeURIComponent(entry.id), {
+                headers: { Authorization: 'Bearer ' + core.auth().token }, cache: 'no-store',
+              });
+              if (!response.ok) throw new Error('无法查看佐证材料。');
+              if (attachmentPreviewUrl) URL.revokeObjectURL(attachmentPreviewUrl);
+              attachmentPreviewUrl = URL.createObjectURL(await response.blob());
+              const media = document.createElement(entry.contentType.startsWith('image/') ? 'img' : 'iframe');
+              media.src = attachmentPreviewUrl; media.title = entry.name;
+              dialog.querySelector('#screen-preview-body').replaceChildren(media);
+              dialog.querySelector('#screen-preview-title').textContent = entry.name;
+              const download = dialog.querySelector('#screen-preview-download');
+              download.href = attachmentPreviewUrl; download.download = entry.name;
+              dialog.showModal();
+            } catch (error) { showError('screen-detail-error', error.message || '无法查看佐证材料。'); }
+            finally { button.disabled = false; }
+          };
+        });
+      }
+    }
 
     if (Array.isArray(item.corrections) && item.corrections.length) {
       const section = document.createElement('section');
@@ -713,7 +830,7 @@
         }
       };
     });
-    [['screen-retry-screening', '/screening/retry'], ['screen-retry-interview', '/interview-analysis/retry']].forEach(([buttonId, path]) => {
+    [['screen-retry-resume', '/resume/retry'], ['screen-retry-screening', '/screening/retry'], ['screen-retry-interview', '/interview-analysis/retry']].forEach(([buttonId, path]) => {
       const button = byId(buttonId);
       if (!button) return;
       button.onclick = async () => {

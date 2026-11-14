@@ -98,6 +98,13 @@ def init_db() -> None:
           original_name TEXT NOT NULL, content_type TEXT NOT NULL, file_path TEXT NOT NULL,
           sha256 TEXT NOT NULL, raw_text TEXT, parsed_json TEXT, error TEXT
         );
+        CREATE TABLE IF NOT EXISTS application_attachments (
+          id TEXT PRIMARY KEY,
+          application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+          original_name TEXT NOT NULL, content_type TEXT NOT NULL,
+          sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+          content BLOB NOT NULL, created_at REAL NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS screenings (
           application_id TEXT PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
           report_json TEXT, model TEXT, prompt_version TEXT, attempts INTEGER NOT NULL DEFAULT 0,
@@ -153,6 +160,7 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS applications_job_idx ON applications(job_id, created_at);
         CREATE INDEX IF NOT EXISTS human_interviews_schedule_idx ON human_interviews(status, scheduled_at);
         CREATE INDEX IF NOT EXISTS applications_queue_idx ON applications(screening_status, created_at);
+        CREATE INDEX IF NOT EXISTS attachments_application_idx ON application_attachments(application_id);
         """)
         application_columns = {row[1] for row in connection.execute("PRAGMA table_info(applications)")}
         if "source" not in application_columns:
@@ -375,7 +383,8 @@ def create_application(candidate_id: str, job_id: str, file_name: str,
 
 def create_hr_import(company_id: str, uploader_id: str, job_id: str,
                      candidate_name: str, file_name: str, content_type: str,
-                     file_path: str, sha256: str) -> str:
+                     file_path: str, sha256: str,
+                     attachments: list[dict] | None = None) -> str:
     """Keep imported resumes in the normal queue without granting a candidate account access."""
     app_id, user_id, now = _id(), _id(), time.time()
     salt = secrets.token_hex(16)
@@ -398,7 +407,31 @@ def create_hr_import(company_id: str, uploader_id: str, job_id: str,
           (application_id,original_name,content_type,file_path,sha256)
           VALUES (?,?,?,?,?)""", (app_id, file_name, content_type, file_path, sha256))
         connection.execute("INSERT INTO screenings (application_id) VALUES (?)", (app_id,))
+        for item in attachments or []:
+            connection.execute("""INSERT INTO application_attachments
+              (id,application_id,original_name,content_type,sha256,size_bytes,content,created_at)
+              VALUES (?,?,?,?,?,?,?,?)""",
+              (_id(), app_id, item["name"], item["content_type"], item["sha256"],
+               len(item["data"]), item["data"], now))
     return app_id
+
+
+def list_attachments(app_id: str) -> list[dict]:
+    with db() as connection:
+        rows = connection.execute("""SELECT id,original_name,content_type,size_bytes,created_at
+          FROM application_attachments WHERE application_id=? ORDER BY created_at,id""",
+          (app_id,)).fetchall()
+    return [{"id": row["id"], "name": row["original_name"],
+             "contentType": row["content_type"], "sizeBytes": row["size_bytes"],
+             "createdAt": row["created_at"]} for row in rows]
+
+
+def get_attachment(app_id: str, attachment_id: str) -> dict | None:
+    with db() as connection:
+        row = connection.execute("""SELECT original_name,content_type,content
+          FROM application_attachments WHERE application_id=? AND id=?""",
+          (app_id, attachment_id)).fetchone()
+    return dict(row) if row else None
 
 
 def resume_source_counts(company_id: str) -> dict:
@@ -434,7 +467,8 @@ def _application_query(where: str, args: tuple) -> list[dict]:
           hi.result_sent AS human_result_sent, hi.sent_at AS human_sent_at,
           hi.expires_at AS human_expires_at, hi.accepted_at AS human_accepted_at,
           hi.send_count AS human_send_count, hi.last_sent_at AS human_last_sent_at,
-          rev.decision AS review_decision, rev.notes AS review_notes, rev.updated_at AS reviewed_at
+          rev.decision AS review_decision, rev.notes AS review_notes, rev.updated_at AS reviewed_at,
+          (SELECT COUNT(*) FROM application_attachments att WHERE att.application_id=a.id) AS attachment_count
           FROM applications a JOIN jobs j ON j.id=a.job_id
           JOIN companies c ON c.id=j.company_id JOIN users u ON u.id=a.candidate_id
           LEFT JOIN users uploader ON uploader.id=a.uploaded_by
@@ -695,6 +729,22 @@ def requeue_screening(app_id: str) -> bool:
         connection.execute("UPDATE screenings SET error=NULL WHERE application_id=?", (app_id,))
         connection.execute("UPDATE applications SET screening_status='queued',updated_at=? WHERE id=?",
                            (time.time(), app_id))
+    return True
+
+
+def requeue_resume(app_id: str) -> bool:
+    """Retry a failed PDF/DOCX extraction and its downstream screening."""
+    with db() as connection:
+        row = connection.execute("SELECT resume_status,screening_status FROM applications WHERE id=?",
+                                 (app_id,)).fetchone()
+        if not row or row["resume_status"] != "failed" or row["screening_status"] != "skipped":
+            return False
+        connection.execute("UPDATE resumes SET error=NULL WHERE application_id=?", (app_id,))
+        connection.execute("UPDATE screenings SET error=NULL WHERE application_id=?", (app_id,))
+        connection.execute("""UPDATE applications SET status=CASE WHEN status IN
+          ('ai_interview_invited','ai_interview_in_progress','ai_interview_completed','hr_interview_invited','closed')
+          THEN status ELSE 'parsing' END, resume_status='queued', screening_status='queued',
+          updated_at=? WHERE id=?""", (time.time(), app_id))
     return True
 
 
