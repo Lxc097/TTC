@@ -153,29 +153,29 @@ export function LivePulsePanel({ videoElement, cameraReady, enabled, onEnabledCh
   const displayPoints = enabled && cameraReady && videoElement ? points : []
   const displayBpm = enabled && cameraReady && videoElement && signal === 'ready' ? bpm : null
 
-  return <section className={'live-pulse' + (enabled ? ' live-pulse--on' : '')} aria-label="动态心率波形">
-    <div className="live-pulse__header">
-      <span className="live-pulse__icon"><HeartPulse size={20} /></span>
-      <div className="live-pulse__heading"><h3>动态心率波形</h3><p>本机 PPG 光学信号 · 实验性估计</p></div>
-      <label className="live-pulse__toggle">
+  return <section className={'pulse-panel' + (enabled ? ' pulse-panel--on' : '')} aria-label="动态心率波形">
+    <div className="pulse-panel__header">
+      <span className="pulse-panel__icon"><HeartPulse size={20} /></span>
+      <div className="pulse-panel__heading"><h3>动态心率波形</h3><p>本机 PPG 光学信号 · 实验性估计</p></div>
+      <label className="pulse-panel__toggle">
         <input type="checkbox" role="switch" checked={enabled} onChange={event => toggle(event.target.checked)} aria-label="开启本机心率波形" />
-        <span className="live-pulse__switch" aria-hidden="true" />
+        <span className="pulse-panel__switch" aria-hidden="true" />
         <span>{enabled ? '已开启' : '开启波形'}</span>
       </label>
     </div>
-    <div className="live-pulse__body">
-      <div className="live-pulse__chart">
-        <div className="live-pulse__chart-top"><span><Activity size={14} /> 实时光学波形</span><span className={'live-pulse__status' + (displayBpm !== null ? ' is-ready' : '')}>{status}</span></div>
-        <div className="live-pulse__graph">
+    <div className="pulse-panel__body">
+      <div className="pulse-panel__chart">
+        <div className="pulse-panel__chart-top"><span><Activity size={14} /> 实时光学波形</span><span className={'pulse-panel__status' + (displayBpm !== null ? ' is-ready' : '')}>{status}</span></div>
+        <div className="pulse-panel__graph">
           <svg viewBox="0 0 600 84" preserveAspectRatio="none" role="img" aria-label={displayPoints.length ? '实时摄像头光学信号波形' : '等待光学信号的基线'}>
-            <line x1="0" y1="42" x2="600" y2="42" className="live-pulse__baseline" />
-            <path d={pulseWaveformPath(displayPoints)} className="live-pulse__line" />
+            <line x1="0" y1="42" x2="600" y2="42" className="pulse-panel__baseline" />
+            <path d={pulseWaveformPath(displayPoints)} className="pulse-panel__line" />
           </svg>
-          {enabled && <span className="live-pulse__scan" aria-hidden="true" />}
+          {enabled && <span className="pulse-panel__scan" aria-hidden="true" />}
         </div>
       </div>
-      <div className="live-pulse__metric"><span>估计心率</span><strong>{displayBpm ?? '--'}<small> BPM</small></strong><em>{displayBpm === null ? '等待可靠信号' : '仅供个人观察'}</em></div>
+      <div className="pulse-panel__metric"><span>估计心率</span><strong>{displayBpm ?? '--'}<small> BPM</small></strong><em>{displayBpm === null ? '等待可靠信号' : '仅供个人观察'}</em></div>
     </div>
-    <p className="live-pulse__privacy"><ShieldCheck size={14} /> 开启后仅在本机读取当前摄像头画面；不上传、不保存、不参与招聘评分。估计值并非医疗测量。</p>
+    <p className="pulse-panel__privacy"><ShieldCheck size={14} /> 开启后仅在本机读取当前摄像头画面；不上传、不保存、不参与招聘评分。估计值并非医疗测量。</p>
   </section>
 }
