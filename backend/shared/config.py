@@ -136,6 +136,14 @@ SILICONFLOW_MODEL = os.getenv("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V4-Pro"
 STT_ENABLED = os.getenv("STT_ENABLED", "0") == "1"
 STT_MODEL = os.getenv("STT_MODEL", "FunAudioLLM/SenseVoiceSmall")
 
+# Recruitment analysis is independent of the legacy interview model. All
+# hiring-consultant, claim, resume and assessment calls read this one setting.
+RECRUITMENT_AI_MODEL = (os.getenv("RECRUITMENT_AI_MODEL") or
+                        os.getenv("SILICONFLOW_MODEL_PRIMARY") or
+                        "deepseek-ai/DeepSeek-V4.1-Flash").strip()
+AI_MAX_CONCURRENCY = max(1, min(16, _i("AI_MAX_CONCURRENCY", 3)))
+SEARCH_MAX_CONCURRENCY = max(1, min(16, _i("SEARCH_MAX_CONCURRENCY", 3)))
+
 # ---------- 报告 ----------
 REPORT_MAX_POINTS = _i("REPORT_MAX_POINTS", 3)
 # LLM 负责"分析"（语义判断 / 写追问 / 写总结），FacePhys 只负责"测量"。

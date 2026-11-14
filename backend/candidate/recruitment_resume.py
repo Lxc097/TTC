@@ -94,6 +94,22 @@ _SECTIONS = {
 }
 
 
+def valid_candidate_name(value: object) -> str | None:
+    """Reject OCR coordinates, URLs and file metadata before display or storage."""
+    if not isinstance(value, str):
+        return None
+    name = re.sub(r"\s+", " ", value).strip()
+    if not 2 <= len(name) <= 80 or re.search(r"\d|[\[\]{}<>|@:/\\]", name):
+        return None
+    if name.lower() in {"www", "http", "https", "com", "cn"} or name.lower().startswith("www."):
+        return None
+    if re.search(r"(?i)table|bbox|markdown|image|figure|resume|candidate|scan|简历|姓名待确认|候选人", name):
+        return None
+    if not re.fullmatch(r"[\u3400-\u9fffA-Za-z\u00c0-\u024f·.' -]+", name):
+        return None
+    return name if re.search(r"[\u3400-\u9fffA-Za-z]", name) else None
+
+
 def structure_resume(text: str) -> dict:
     text = _clean(text)[:MAX_TEXT_CHARS]
     if len(re.sub(r"\s", "", text)) < 20:
@@ -115,8 +131,9 @@ def structure_resume(text: str) -> dict:
     for line in lines[:8]:
         if len(line) <= 35 and not any(symbol in line for symbol in ("@", "http", ":", "：")) \
                 and not any(pattern.match(line) for pattern in _SECTIONS.values()):
-            result["name"] = line
-            break
+            if name := valid_candidate_name(line):
+                result["name"] = name
+                break
     current = None
     section_lines: dict[str, list[str]] = {key: [] for key in _SECTIONS}
     for line in lines:

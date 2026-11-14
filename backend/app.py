@@ -24,6 +24,15 @@ from interviewer.api import router
 from candidate.recruitment_api import router as recruitment_router, start_worker, stop_worker
 from jianli.api import router as jianli_router
 from candidate.formal_interview_api import router as formal_interview_router
+from candidate.recruitment_architect import router as architect_router
+from candidate import recruitment_architect_store as architect_store
+from candidate.recruitment_verification import router as verification_router
+from candidate.recruitment_assessment import router as assessment_router
+from candidate.recruitment_batches import (router as screening_batches_router,
+                                           start_worker as start_assessment_worker,
+                                           stop_worker as stop_assessment_worker)
+from candidate.recruitment_progress import router as progress_router
+from candidate import recruitment_progress as progress_store
 
 BASE = Path(__file__).resolve().parent
 CLASSIC_WEB = BASE.parent / "frontend" / "interviewer"
@@ -76,7 +85,7 @@ app.add_middleware(
         "http://localhost:5500,http://127.0.0.1:8080,http://localhost:8080").split(",")
         if origin.strip()],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -84,6 +93,11 @@ app.include_router(router)
 app.include_router(recruitment_router)
 app.include_router(jianli_router)
 app.include_router(formal_interview_router)
+app.include_router(architect_router)
+app.include_router(verification_router)
+app.include_router(assessment_router)
+app.include_router(screening_batches_router)
+app.include_router(progress_router)
 
 # 队友测试通道。TTC_ACCESS_CODE 为空时这里什么都不做 —— 本机开发和单测
 # 的行为不变。放在所有中间件之后，让它成为最外层：先验口令，再谈别的。
@@ -94,10 +108,14 @@ if config.ACCESS_CODE:
 @app.on_event("startup")
 async def start_recruitment_worker() -> None:
     await start_worker()
+    await start_assessment_worker()
+    architect_store.init_db()
+    progress_store.init_db()
 
 
 @app.on_event("shutdown")
 async def stop_recruitment_worker() -> None:
+    await stop_assessment_worker()
     await stop_worker()
 
 _static = BASE / "static"

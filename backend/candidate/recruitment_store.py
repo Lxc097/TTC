@@ -13,7 +13,7 @@ import secrets
 import sqlite3
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Iterator
 
@@ -91,7 +91,7 @@ def init_db() -> None:
           created_at REAL NOT NULL, updated_at REAL NOT NULL,
           source TEXT NOT NULL DEFAULT 'candidate_portal',
           uploaded_by TEXT REFERENCES users(id),
-          UNIQUE(candidate_id, job_id)
+          resume_version INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE IF NOT EXISTS resumes (
           application_id TEXT PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
@@ -108,7 +108,8 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS screenings (
           application_id TEXT PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
           report_json TEXT, model TEXT, prompt_version TEXT, attempts INTEGER NOT NULL DEFAULT 0,
-          prompt_tokens INTEGER, completion_tokens INTEGER, error TEXT, completed_at REAL
+          prompt_tokens INTEGER, completion_tokens INTEGER, error TEXT, completed_at REAL,
+          profile_version_id TEXT
         );
         CREATE TABLE IF NOT EXISTS external_evidence (
           id TEXT PRIMARY KEY, application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
@@ -127,6 +128,17 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS correction_requests (
           id TEXT PRIMARY KEY, application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
           message TEXT NOT NULL, created_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS candidate_name_corrections (
+          id TEXT PRIMARY KEY, application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+          corrected_name TEXT NOT NULL, previous_name TEXT NOT NULL,
+          actor_id TEXT NOT NULL REFERENCES users(id), created_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS hiring_profile_versions (
+          id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+          version INTEGER NOT NULL, profile_json TEXT NOT NULL,
+          created_by TEXT NOT NULL REFERENCES users(id), confirmed_at REAL NOT NULL,
+          UNIQUE(job_id, version)
         );
         CREATE TABLE IF NOT EXISTS formal_interviews (
           application_id TEXT PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
@@ -161,12 +173,17 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS human_interviews_schedule_idx ON human_interviews(status, scheduled_at);
         CREATE INDEX IF NOT EXISTS applications_queue_idx ON applications(screening_status, created_at);
         CREATE INDEX IF NOT EXISTS attachments_application_idx ON application_attachments(application_id);
+        CREATE INDEX IF NOT EXISTS candidate_name_corrections_application_idx
+          ON candidate_name_corrections(application_id,created_at DESC);
         """)
         application_columns = {row[1] for row in connection.execute("PRAGMA table_info(applications)")}
         if "source" not in application_columns:
             connection.execute("ALTER TABLE applications ADD COLUMN source TEXT NOT NULL DEFAULT 'candidate_portal'")
         if "uploaded_by" not in application_columns:
             connection.execute("ALTER TABLE applications ADD COLUMN uploaded_by TEXT REFERENCES users(id)")
+        if "resume_version" not in application_columns:
+            connection.execute("ALTER TABLE applications ADD COLUMN resume_version INTEGER NOT NULL DEFAULT 1")
+        _ensure_columns(connection, "screenings", (("profile_version_id", "TEXT"),))
         columns = {row[1] for row in connection.execute("PRAGMA table_info(formal_interviews)")}
         if "questions_json" not in columns:
             connection.execute("ALTER TABLE formal_interviews ADD COLUMN questions_json TEXT NOT NULL DEFAULT '[]'")
@@ -203,6 +220,50 @@ def init_db() -> None:
         connection.execute("""UPDATE applications SET screening_status='queued',
           resume_status=CASE WHEN resume_status='parsing' THEN 'queued' ELSE resume_status END,
           status='submitted' WHERE screening_status IN ('parsing','screening')""")
+    _remove_legacy_single_resume_constraint()
+
+
+def _remove_legacy_single_resume_constraint() -> None:
+    """Allow versioned submissions while preserving linked interview and screening rows."""
+    path = data_dir() / "recruitment.sqlite3"
+    with closing(sqlite3.connect(path, timeout=15)) as connection:
+        connection.row_factory = sqlite3.Row
+        indexes = connection.execute("PRAGMA index_list(applications)").fetchall()
+        obsolete_indexes = {index["name"] for index in indexes if index["unique"] and
+                            [column["name"] for column in connection.execute(
+                                f"PRAGMA index_info('{index['name']}')").fetchall()] ==
+                            ["candidate_id", "job_id"]}
+        if not obsolete_indexes:
+            return
+        objects = connection.execute("""SELECT type,name,sql FROM sqlite_master
+          WHERE tbl_name='applications' AND type IN ('index','trigger') AND sql IS NOT NULL""").fetchall()
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            connection.execute("""CREATE TABLE applications_resume_versions (
+              id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL REFERENCES users(id),
+              job_id TEXT NOT NULL REFERENCES jobs(id), status TEXT NOT NULL,
+              resume_status TEXT NOT NULL, screening_status TEXT NOT NULL,
+              verify_links INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL,
+              updated_at REAL NOT NULL, source TEXT NOT NULL DEFAULT 'candidate_portal',
+              uploaded_by TEXT REFERENCES users(id), resume_version INTEGER NOT NULL DEFAULT 1)""")
+            columns = ("id,candidate_id,job_id,status,resume_status,screening_status,"
+                       "verify_links,created_at,updated_at,source,uploaded_by,resume_version")
+            connection.execute(f"INSERT INTO applications_resume_versions({columns}) "
+                               f"SELECT {columns} FROM applications")
+            connection.execute("DROP TABLE applications")
+            connection.execute("ALTER TABLE applications_resume_versions RENAME TO applications")
+            for item in objects:
+                if item["name"] not in obsolete_indexes:
+                    connection.execute(item["sql"])
+            if connection.execute("PRAGMA foreign_key_check").fetchone():
+                raise sqlite3.IntegrityError("简历版本迁移后关联记录校验失败。")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.execute("PRAGMA foreign_keys=ON")
 
 
 def _id() -> str:
@@ -370,14 +431,26 @@ def create_application(candidate_id: str, job_id: str, file_name: str,
                        verify_links: bool) -> str:
     app_id, now = _id(), time.time()
     with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        duplicate = connection.execute("""SELECT a.id FROM applications a
+          JOIN resumes r ON r.application_id=a.id
+          WHERE a.candidate_id=? AND a.job_id=? AND r.sha256=? LIMIT 1""",
+          (candidate_id, job_id, sha256)).fetchone()
+        if duplicate:
+            raise ValueError("这份简历已投递该岗位；如需更新，请上传新版本。")
+        next_version = connection.execute("""SELECT COALESCE(MAX(resume_version),0)+1
+          FROM applications WHERE candidate_id=? AND job_id=?""",
+          (candidate_id, job_id)).fetchone()[0]
         connection.execute("""INSERT INTO applications
-          (id,candidate_id,job_id,status,resume_status,screening_status,verify_links,created_at,updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?)""",
-          (app_id, candidate_id, job_id, "submitted", "queued", "queued", int(verify_links), now, now))
+          (id,candidate_id,job_id,status,resume_status,screening_status,verify_links,created_at,updated_at,resume_version)
+          VALUES (?,?,?,?,?,?,?,?,?,?)""",
+          (app_id, candidate_id, job_id, "submitted", "queued", "queued", int(verify_links), now, now, next_version))
         connection.execute("""INSERT INTO resumes
           (application_id,original_name,content_type,file_path,sha256)
           VALUES (?,?,?,?,?)""", (app_id, file_name, content_type, file_path, sha256))
-        connection.execute("INSERT INTO screenings (application_id) VALUES (?)", (app_id,))
+        connection.execute("""INSERT INTO screenings (application_id,profile_version_id)
+          VALUES (?,(SELECT id FROM hiring_profile_versions WHERE job_id=?
+                    ORDER BY version DESC LIMIT 1))""", (app_id, job_id))
     return app_id
 
 
@@ -406,7 +479,9 @@ def create_hr_import(company_id: str, uploader_id: str, job_id: str,
         connection.execute("""INSERT INTO resumes
           (application_id,original_name,content_type,file_path,sha256)
           VALUES (?,?,?,?,?)""", (app_id, file_name, content_type, file_path, sha256))
-        connection.execute("INSERT INTO screenings (application_id) VALUES (?)", (app_id,))
+        connection.execute("""INSERT INTO screenings (application_id,profile_version_id)
+          VALUES (?,(SELECT id FROM hiring_profile_versions WHERE job_id=?
+                    ORDER BY version DESC LIMIT 1))""", (app_id, job_id))
         for item in attachments or []:
             connection.execute("""INSERT INTO application_attachments
               (id,application_id,original_name,content_type,sha256,size_bytes,content,created_at)
@@ -451,8 +526,11 @@ def _application_query(where: str, args: tuple) -> list[dict]:
           j.screening_criteria AS job_criteria, j.criteria_updated_at AS job_criteria_updated_at,
           c.name AS company_name,
           u.name AS candidate_name, u.email AS candidate_email,
+          (SELECT corrected_name FROM candidate_name_corrections nc
+           WHERE nc.application_id=a.id ORDER BY nc.created_at DESC,nc.id DESC LIMIT 1)
+           AS corrected_candidate_name,
           uploader.name AS uploaded_by_name,
-          r.original_name, r.content_type, r.file_path, r.raw_text, r.parsed_json, r.error AS resume_error,
+          r.original_name, r.content_type, r.file_path, r.sha256, r.raw_text, r.parsed_json, r.error AS resume_error,
           s.report_json, s.model, s.prompt_version, s.attempts,
           s.prompt_tokens, s.completion_tokens, s.error AS screening_error,
           v.id AS invitation_id, v.room_code, v.status AS invitation_status,
@@ -491,6 +569,7 @@ def _candidate_query(where: str, args: tuple) -> list[dict]:
     with db() as connection:
         rows = connection.execute(f"""SELECT a.id, a.job_id, a.candidate_id,
           a.status, a.resume_status, a.screening_status, a.created_at, a.updated_at,
+          a.resume_version,
           j.title AS job_title, c.name AS company_name, r.error AS resume_error,
           v.id AS invitation_id, v.status AS invitation_status,
           v.sent_at AS invitation_sent_at, v.expires_at AS invitation_expires_at,
@@ -537,6 +616,47 @@ def hr_application(app_id: str, company_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
+def correct_candidate_name(app_id: str, company_id: str, actor_id: str, name: str) -> dict | None:
+    """Record an HR correction without modifying PDF bytes or extracted resume text."""
+    from .recruitment_resume import valid_candidate_name
+    corrected = valid_candidate_name(name)
+    if not corrected:
+        raise ValueError("请输入有效的候选人姓名。")
+    with db() as connection:
+        row = connection.execute("""SELECT a.source,a.candidate_id,u.name AS user_name
+          FROM applications a JOIN jobs j ON j.id=a.job_id
+          JOIN users u ON u.id=a.candidate_id
+          WHERE a.id=? AND j.company_id=?""", (app_id, company_id)).fetchone()
+        if not row:
+            return None
+        previous = connection.execute("""SELECT id,corrected_name FROM candidate_name_corrections
+          WHERE application_id=? ORDER BY created_at DESC,id DESC LIMIT 1""",
+          (app_id,)).fetchone()
+        if previous and previous["corrected_name"] == corrected:
+            return {"id": previous["id"], "candidateName": corrected, "unchanged": True}
+        correction_id, now = _id(), time.time()
+        connection.execute("""INSERT INTO candidate_name_corrections
+          (id,application_id,corrected_name,previous_name,actor_id,created_at)
+          VALUES(?,?,?,?,?,?)""",
+          (correction_id, app_id, corrected,
+           previous["corrected_name"] if previous else row["user_name"], actor_id, now))
+        if row["source"] == "hr_import":
+            connection.execute("UPDATE users SET name=? WHERE id=?", (corrected, row["candidate_id"]))
+        connection.execute("UPDATE applications SET updated_at=? WHERE id=?", (now, app_id))
+    return {"id": correction_id, "candidateName": corrected, "correctedAt": now}
+
+
+def list_candidate_name_corrections(app_id: str) -> list[dict]:
+    with db() as connection:
+        rows = connection.execute("""SELECT nc.id,nc.previous_name,nc.corrected_name,
+          nc.created_at,u.name AS corrected_by FROM candidate_name_corrections nc
+          JOIN users u ON u.id=nc.actor_id WHERE nc.application_id=?
+          ORDER BY nc.created_at,nc.id""", (app_id,)).fetchall()
+    return [{"id": row["id"], "previousName": row["previous_name"],
+             "candidateName": row["corrected_name"], "correctedBy": row["corrected_by"],
+             "correctedAt": row["created_at"]} for row in rows]
+
+
 def hr_applications(company_id: str, *, job_id: str | None = None,
                     status: str | None = None, manual_review: bool = False,
                     since: float | None = None) -> list[dict]:
@@ -568,9 +688,17 @@ def claim_next_application() -> str | None:
 
 
 def save_parsed_resume(app_id: str, raw_text: str, parsed: dict) -> None:
+    from .recruitment_resume import valid_candidate_name
     with db() as connection:
         connection.execute("UPDATE resumes SET raw_text=?, parsed_json=?, error=NULL WHERE application_id=?",
                            (raw_text, json.dumps(parsed, ensure_ascii=False), app_id))
+        name = valid_candidate_name(parsed.get("name"))
+        if name:
+            connection.execute("""UPDATE users SET name=? WHERE id=(
+              SELECT candidate_id FROM applications WHERE id=? AND source='hr_import')
+              AND NOT EXISTS (SELECT 1 FROM candidate_name_corrections
+                              WHERE application_id=?)""",
+              (name, app_id, app_id))
         connection.execute("""UPDATE applications SET status=CASE WHEN status IN
           ('ai_interview_invited','ai_interview_in_progress','ai_interview_completed','hr_interview_invited','closed')
           THEN status ELSE 'screening' END, resume_status='parsed',
