@@ -12,6 +12,7 @@ Desktop.ini
 # Logs
 *.log
 logs/
+.local-data/
 
 # Environment / secrets
 .env
@@ -27,6 +28,9 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 *.exe
 *.dll
 *.pdb
@@ -35,3 +39,5 @@ target/
 # 带真实密钥的交接文档，永不提交
 *.local.md
 
+# 本机部署脚本，永不提交
+*.local.sh
