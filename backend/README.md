@@ -16,11 +16,11 @@
 3. 候选人读取 GET /api/applications/my 或 /api/applications/{id}，只得到进度、处理错误及邀请入口；可向 POST /api/applications/{id}/corrections 提交本人申请的更正说明。HR 通过 GET /api/hr/applications、GET /api/hr/applications/{id} 查看本企业的解析结果、内部报告、更正说明与人工复核信息；原件通过受控的 /api/hr/applications/{id}/resume 下载。
 4. HR 向 POST /api/hr/applications/{id}/review 发送 decision=invite、verify 或 hold 及 notes。invite 创建同一申请唯一邀请。正式 AI 初面走下述 /ai-interview/ 流程；原有双人房间仍可用 POST /api/applications/{id}/interview/start 取得专属票据并进入 /personal/。
 
-企业端另可在简历初筛页点击「录入 PDF 简历」，选择本企业岗位、确认已获得招聘评估授权，再上传最大 8 MB 的 PDF。接口为 POST /api/hr/resumes/import（multipart：jobId、candidateName 可选、permissionConfirmed=true、resume），返回 202 与申请 ID。它写入同一个本地 SQLite applications/resumes 表并进入原有解析、AI 初筛队列；applications.source 区分 candidate_portal 与 hr_import，uploaded_by 记录录入人。GET /api/hr/applications 的 counts 返回本企业 total、candidatePortal、hrImport；旧数据库启动时自动补列，历史记录归为个人投递。企业录入的简历未关联候选人账号，不出现在个人端，暂不能发送线上初面邀请；HR 仍可核验或暂缓。到期清理同时移除录入文件及内部占位身份。
+企业端简历初筛页支持一次拖入最多 30 个 PDF/ZIP，选择本企业岗位并确认招聘评估授权后，调用 POST /api/hr/resumes/batch 写入本地 SQLite 和原有初筛队列。每个 ZIP 对应一名候选人，PDF 主简历进入 AI 识别，佐证材料与申请一一关联供 HR 查看；扫描版 PDF 自动尝试 DeepSeek-OCR。详情、接口和安全边界见 backend/jianli/README.md。原单份 POST /api/hr/resumes/import 继续兼容。applications.source 区分 candidate_portal 与 hr_import，uploaded_by 记录录入人；企业导入记录不出现在个人端，暂不能发送线上初面邀请。到期清理同时移除录入文件及内部占位身份。
 
 除注册、登录和公开岗位列表外，招聘 API 使用 Bearer 令牌；候选人 API 和 HR API 按角色及企业/本人过滤，不能仅靠前端隐藏字段。密码采用加盐派生哈希，令牌只存哈希。数据在 SQLite 与服务端目录中持久化，默认 .local-data/；RECRUITMENT_DATA_DIR 可更换目录，RECRUITMENT_RETENTION_DAYS 控制定期清理。简历及 JD 均视为不可信数据，模型输出经严格 Schema 和原文证据检查。没有真实密钥、格式错误或模型超时时会记录失败供 HR 人工处理，不生成虚构报告或自动拒绝。
 
-测试依赖见 requirements-test.txt。运行 python -m unittest discover -s tests -v 可覆盖 PDF/DOCX、持久化与租户隔离、完整投递/初筛/邀约链路、模型 JSON 校验与超时重试；集成测试的模型结果标为 fixture，不发起付费请求。
+测试依赖见 requirements-test.txt。运行 python -m unittest discover -s tests -v 可覆盖 PDF/DOCX、持久化与租户隔离、完整投递/初筛/邀约链路、招聘阶段（阶段映射、真人面试、邀请过期与重发、结果可见性）、模型 JSON 校验与超时重试；集成测试的模型结果标为 fixture，不发起付费请求。
 
 **部署限制：**原有未绑定招聘申请的房间、场次与按会话 ID 查询报告接口仍保留本地演示访问方式；不要把整站直接公开处理真实候选人数据。上线前应统一加强这些旧端点的身份权限、TLS、限流与企业开通流程。分离端口开发时用 TTC_CORS_ORIGINS 指定可信浏览器来源。原双人房间状态仍在内存中，进程重启后需由已持久化的申请邀请重新进入房间。
 
@@ -31,6 +31,50 @@
 本人已获邀请时，POST /api/applications/{id}/ai-interview/start 创建或恢复同一正式尝试，返回 attemptId 与只含岗位及本人简历内容的配置。POST /api/interview/sessions 以 applicationId、attemptId 请求真实模型题目；若侧车退回本地题库则返回不可用，不视为正式开考。POST /api/interview/follow-ups 与 /api/interview/answer-summary 只转发已绑定题目的实时回答；POST /api/applications/{id}/ai-interview/answers 保存每题回答，POST /api/applications/{id}/ai-interview/complete 在全部题目有有效回答后才完成。重复开始复用尝试与会话，重复完成安全返回完成状态。所有这些浏览器请求经过 FastAPI 的本人鉴权，不向候选人返回内部初筛报告。
 
 可选的付费冒烟验证：在本目录运行 python tools/smoke_recruitment_live.py，用合成简历验证真实硅基流动初筛；运行 python tools/smoke_formal_interview.py 前须启动 Node 侧车并在终端明确设置 INTERVIEW_SIDECAR_URL 为当前侧车地址（脚本未设置时默认 8788）。正式面试冒烟会调用真实模型出题与回答总结。两项均不属于自动测试，且不应在 CI 中运行。HR 已完成的正式初面题目与回答保存在本企业详情的 formalInterview 字段；候选人申请 DTO 不包含该内部记录。
+
+## 招聘阶段与结果：真人面试、邀请记录、结果可见性
+
+`candidate/pipeline.py` 是阶段与状态的唯一判定来源：`applications.status` 映射到「投递与初筛 / AI 初面 / 真人面试 / 结束」四个阶段；邀请的「待响应 / 已接受 / 已过期」在读取时按 `expires_at` 计算，不依赖定时任务。企业端与候选人端的 DTO 都用这同一份映射，避免两端显示不一致。
+
+| 阶段 | `applications.status` | 谁来推进 |
+|---|---|---|
+| 1 投递与初筛 | submitted / parsing / screening / hr_review / failed | 候选人投递、后台初筛 |
+| 2 AI 初面 | ai_interview_invited / ai_interview_in_progress / ai_interview_completed | HR 邀请、候选人进入并完成 |
+| 3 真人面试 | hr_interview_invited | HR 安排与改期 |
+| 结束 | closed | HR 提交真人面试结论 |
+
+已进入阶段 3 或已结束的申请，不会被迟到的初筛结果、AI 房间结束事件打回前一阶段。
+
+企业端接口：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| PUT | `/api/hr/jobs/{job_id}/criteria` | 保存 HR 自写初筛标准（≤4000 字，仅本企业可见） |
+| POST | `/api/hr/applications/{id}/human-interview` | 安排真人面试（时间、时长、面试官、video/onsite/phone、地点）→ `hr_interview_invited` |
+| PATCH | `/api/hr/applications/{id}/human-interview` | 改期；或提交结论 pass/hold/reject + 内部备注 + `resultSent` → `closed` |
+| POST | `/api/hr/applications/{id}/human-interview/resend` | 重发真人面试邀请（顺延有效期并计数） |
+| POST | `/api/hr/applications/{id}/invitation/resend` | 重发 AI 初面邀请 |
+| POST | `/api/hr/applications/{id}/ai-result/send` | AI 初面结果是否发送给候选人（需初面已完成） |
+| GET | `/api/hr/invitations?kind=ai\|human&state=` | 邀请记录：两种邀请合并，含 state / sendCount / expiresAt |
+| GET | `/api/hr/applications/{id}/interview-room` | 归档的双人面试间报告（双确认、追问点） |
+| GET | `/api/hr/applications?stage=` | 按阶段过滤申请列表 |
+
+`video` 形式复用该申请的同一间双人面试间（按申请幂等），`onsite` / `phone` 只记录地点或联系方式。企业录入（`hr_import`）的简历没有候选人账号，不能安排线上真人面试。
+
+候选人接口：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/applications/my`、`/api/applications/{id}` | 新增 `stage`、`invitation.sentAt/expiresAt/state`、`humanInterview`、`result`、`aiResult` |
+| POST | `/api/applications/{id}/human-interview/enter` | 进入真人面试房间，返回房间号与本人票据；线下面试返回地点 |
+
+候选人 DTO 永远不含内部报告、`matchScore`、审核意见与面试官备注；真人面试结论只有 `resultSent=true` 时以一句话结论出现，文案集中在 `pipeline.result_message()`。
+
+初筛标准保存在 `jobs.screening_criteria`，作为「评估维度」进入 `screen_resume(..., criteria=...)`；提示词明确它不是指令、不能改变输出结构与评分规则。无标准时请求体与旧版完全一致，提示词版本为 `resume-screening-2026-11-v4`。
+
+数据迁移全部是加法（`ALTER TABLE ADD COLUMN` + `CREATE TABLE IF NOT EXISTS`），旧库启动时自动补齐：`jobs.screening_criteria`、`invitations` 的六个时间/计数/可见性列、新表 `human_interviews` 与 `interview_reports`（均 `ON DELETE CASCADE`，随保留期清理）。环境变量 `AI_INVITE_DAYS`（默认 7）与 `HUMAN_INVITE_DAYS`（默认 3）控制两种邀请的有效期。
+
+> 面试间报告是 best-effort 归档：归档失败不会影响面试结束与报告投递；进程重启后，未归档的场次无法回看。
 
 ---
 
